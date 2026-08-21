@@ -1,0 +1,76 @@
+name: CI
+
+# WS4 S1 (ws4-registry-ui-plan.md §4, §8): build -> typecheck/lint -> unit
+# tests -> a11y scan. Mirrors the gate that lived at
+# conduit-connector-registry's `.github/workflows/ci.yml` for `web/`, adapted
+# for this repo's flat layout (this repo IS the former `web/`, relocated with
+# history — see README.md "Relocation").
+#
+# This repo no longer colocates the signed index (`index/` stays in
+# conduit-connector-registry — see README.md "Trust model"), so the build
+# step below points REGISTRY_INDEX_PATH at this repo's own frozen fixture and
+# widens REGISTRY_MAX_STALENESS_MS so a fixture with a fixed timestamp
+# doesn't spuriously go "stale" as calendar time passes. Both overrides are
+# CI-only: they exist to exercise the build pipeline's mechanics against
+# known-good fixture data, make no trust claim, and are never used against a
+# real index. They do not affect what registry.conduitdata.io/index.json
+# serves — that stays with conduit-connector-registry, unaffected by this
+# repo's CI (WS4 plan §4's "UI deploy cannot gate index publication").
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY_MAX_STALENESS_MS: '315360000000' # 10y — CI-fixture-only override, see header comment
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck (astro check)
+        run: npm run typecheck
+
+      - name: Unit tests (Vitest)
+        run: npm test
+
+      # Build step (README.md "Build pipeline"): read fixture -> structural
+      # verify (stubbed, see README "Trust model") -> freshness -> derive ->
+      # scarf stats (best-effort) -> astro build -> byte-verify dist/index.json.
+      - name: Build site (fixture index -> derive -> astro build -> byte-verify)
+        run: npm run build
+
+      - name: Install Playwright's Chromium (for the a11y scan only)
+        run: npx playwright install --with-deps chromium
+
+      # Zero critical/serious violations gates the build — see
+      # scripts/axe-scan.ts's file header for why a real browser is used.
+      - name: Accessibility scan (axe-core via Playwright/Chromium)
+        run: npm run axe
+
+      - name: Upload dist/ (inspection only — this workflow does not deploy)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: site-dist
+          path: dist
+          retention-days: 7
