@@ -1,9 +1,9 @@
 {
-  "name": "@conduitio/conduit-connector-registry-web",
+  "name": "@conduitio/conduit-registry-ui",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Static site generated at build time from the signed connector registry index. No backend, no client-side fetch-and-render — real HTML per connector, crawlable and agent-legible.",
+  "description": "Static site generated at build time from the signed connector registry index. No backend, no client-side fetch-and-render — real HTML per connector, crawlable and agent-legible. This site is a convenience; the conduit CLI is the trust authority.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20"

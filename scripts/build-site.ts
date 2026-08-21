@@ -7,7 +7,8 @@
  * partial/empty dist/ and never a deploy from bad data. Steps:
  *
  *   1. Obtain the signed index (read from disk — no network hop for the
- *      primary path; index/ and web/ are colocated in this repo).
+ *      primary path). Relocated (WS4 S1) out of the monorepo that owns
+ *      `index/`; see the INDEX_PATH comment below for what changed.
  *   2. Verify the index's own root signature (STUBBED — see src/lib/verifyIndex.ts).
  *   3. Freshness check.
  *   4. Derive the render model (every derived field computed once, here).
@@ -36,9 +37,16 @@ import { BuildError } from '../src/lib/errors';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(here, '..');
-const repoRoot = path.resolve(webRoot, '..');
 
-const INDEX_PATH = process.env['REGISTRY_INDEX_PATH'] ?? path.join(repoRoot, 'index', 'index.json');
+// Relocation note (WS4 S1): prior to the move, `index/` and `web/` were
+// colocated in `conduit-connector-registry` and this defaulted to
+// `../index/index.json` (the monorepo parent). Now that `web/` IS this
+// repo's root, that default would resolve outside the repo entirely. The
+// bundled fixture is the only index this repo owns until S2 replaces this
+// whole read-from-disk step with a fetch-and-verify pipeline against the
+// live signed index (WS4 plan §5).
+const DEFAULT_INDEX_PATH = path.join(webRoot, 'test', 'fixtures', 'sample-index.json');
+const INDEX_PATH = process.env['REGISTRY_INDEX_PATH'] ?? DEFAULT_INDEX_PATH;
 const GENERATED_DIR = path.join(webRoot, '.generated');
 const RENDER_MODEL_PATH = path.join(GENERATED_DIR, 'render-model.json');
 const PUBLIC_DIR = path.join(webRoot, 'public');
