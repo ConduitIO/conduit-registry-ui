@@ -38,13 +38,17 @@ describe('VerifiedBadge', () => {
         <p id="signature-note">This site does not cryptographically verify signatures.</p>
       </>
     );
-    const badge = screen.getByText('Signature on file').closest('span[aria-describedby]');
+    const badge = screen.getByText('Signature on file').closest('span[data-tone]');
     expect(badge?.getAttribute('aria-describedby')).toBe('signature-note');
   });
 
   it('omits aria-describedby entirely when no descriptionId is given, rather than pointing at nothing', () => {
     render(<VerifiedBadge verified={true} />);
-    const badge = screen.getByText('Signature on file').closest('span');
+    // Select the badge root by an attribute it actually owns. `.closest('span')`
+    // matches the label span itself — the innermost element, which never carries
+    // aria-describedby — so that assertion holds no matter what the badge does.
+    const badge = screen.getByText('Signature on file').closest('span[data-tone]');
+    expect(badge).toBeTruthy();
     expect(badge?.hasAttribute('aria-describedby')).toBe(false);
   });
 });
