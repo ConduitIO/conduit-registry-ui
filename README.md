@@ -80,7 +80,9 @@ unconditionally, on every install, regardless of what any web page says. See
 
 ## What's not here yet
 
-- `cmd/registry-verify` (the Go CLI that will perform real index/artifact verification) — S2.
+- Wiring `cmd/registry-verify` — the Go verifier CLI (landed in S2 PR-1: imports conduit's
+  `index.Verify` + `DefaultTrustAnchors`, root-signature/fail-closed build gate, `--require-root`) —
+  into the build pipeline and deleting the TS stub — S2 PR-2.
 - Any change to the badge's derivation or to `deriveVerified.ts` — S2/S3.
 - A production deploy of this site, or any DNS/hosting change. `registry.conduitdata.io` stays
   with `conduit-connector-registry` until S6.
@@ -120,8 +122,8 @@ A failure at steps 1-4 exits non-zero **before** `astro build` ever runs: no `di
 
 ## Known, flagged gaps (not silently deferred)
 
-- Index root-signature verification is structural-only (see "Trust model") until S2 ships a real
-  verifier.
+- Index root-signature verification in the SITE is structural-only (see "Trust model") until S2
+  PR-2 wires the real verifier (`cmd/registry-verify`, landed in S2 PR-1) into the build.
 - Scarf stats fetch targets a placeholder endpoint shape; no token is provisioned, so the section
   is removed rather than shown as permanently "unavailable" (an empty shelf would imply a data
   source exists when none does).
