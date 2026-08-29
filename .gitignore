@@ -9,3 +9,7 @@ public/search-manifest.json
 # the build copies them into dist/. Regenerated every run — never committed.
 # The high-water mark (verify/state.json) IS committed: that is the memory.
 verify/index.json
+
+# Per-version verdict report written by the CLI artifacts pass. Regenerated
+# every build (like index.json) — never committed.
+verify/artifacts.json

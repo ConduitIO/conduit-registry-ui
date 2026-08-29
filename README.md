@@ -52,25 +52,21 @@ Two distinct "verified" claims exist on this site. Say them separately:
   window. Any failure exits non-zero before `astro build` runs: **an index the conduit CLI
   would refuse cannot reach this site.** The verdict (exit 0) flows into the render model as
   `verified: true` (`src/lib/verifyViaCli.ts`).
-- **The per-version badge — "Signature on file"** reflects exactly one fact: that version's
-  entry in the verified index _references_ a signature and a SLSA provenance bundle, the
-  version isn't yanked, and its publisher isn't revoked (`src/lib/deriveVerified.ts`). **It does
-  not mean this site has cryptographically checked that version's artifact bytes.** No component
-  in this repo re-runs `cosign verify`, checks Sigstore/Rekor inclusion, or validates SLSA
-  provenance against a pinned identity.
-
-The badge's original justification assumed an "index-CI" job in `conduit-connector-registry`
-that re-fetches every artifact, recomputes its checksum, and runs `cosign verify` before merge.
-**That job does not exist yet.** Until it does, or until this repo performs the check itself,
-"Signature on file" means "the verified index says this version was signed," not "we checked
-the bytes."
-
-Remaining slices of this workstream:
-
-- **S3** — per-artifact Sigstore/SLSA verification against the pinned publisher identity, a
-  three-state badge (pass / fail-with-reason / not-attempted — never a bare presence check), a
-  `/verify` page, and on-page copy naming exactly what was and wasn't checked, as-of timestamp
-  included.
+- **The per-version verdict — pass / fail / not-attempted (S3).** At build time the same CLI's
+  `--artifacts` pass (after the index verdict) reads every version's Sigstore signature and
+  SLSA provenance references **out of the verified index itself**, fetches only the referenced
+  bundles (never the binaries — bounded at 1 MiB), and cryptographically verifies each one
+  against the trust anchors, the publisher's pinned OIDC identity, and the SLSA builder
+  identity — binding the subject digest to the sha256 the index declares. The result is a
+  three-state verdict per version: **pass** (every signature and provenance verified and
+  bound), **fail** with the reason (a check failed), or **not-attempted** with the reason (no
+  provenance reference in the index, an unfetchable bundle, a malformed declaration — a
+  missing reference is never a pass). A revoked publisher's versions always render
+  not-attempted: a verifying signature under a revoked identity does not establish trust.
+  Verdicts are computed once, at build time, and frozen into the site; nothing on this site
+  re-verifies and no runtime code touches the network. The honest semantics live in
+  `src/lib/verdicts.ts`, the report is written to `verify/artifacts.json`, and the full
+  record — what was verified, how, when, and what it does not mean — is the `/verify` page.
 
 The only verification that actually protects an install is your own CLI:
 
@@ -84,9 +80,12 @@ Sigstore signatures and SLSA provenance against pinned identities, staleness, an
 unconditionally, on every install, regardless of what any web page says. See
 `ws4-registry-ui-plan.md` §1 for the exact verification the CLI performs.
 
+One thing the site still does not do, and will not: it never downloads or checks the artifact
+**binaries** (only the small signature/provenance bundles), so an install-time check by your CLI
+remains the authoritative check of the bytes you actually get.
+
 ## What's not here yet
 
-- Per-artifact Sigstore/SLSA verification at build time (three-state badge, `/verify` page) — S3.
 - A production deploy of this site, or any DNS/hosting change. `registry.conduitdata.io` stays
   with `conduit-connector-registry` until S6.
 
@@ -101,30 +100,42 @@ unconditionally, on every install, regardless of what any web page says. See
    `ERR_INDEX_ROLLBACK`, `ERR_INDEX_STALE`, ... — exits non-zero here.
 2. The CLI's exit 0 **is** the verification verdict; the verified RAW bytes it wrote to
    `verify/index.json` flow onward untouched (never re-parsed into a trust decision).
-3. Derive the render model (every computed fact — verified, effective status, default version,
-   compat matrix — computed once, here).
-4. Fetch Scarf download stats, best-effort (never fails the build; no real data source is
+3. **Per-version artifact verdicts** (the `--artifacts` pass): the same CLI reads the
+   signature/provenance references out of the verified index, fetches the bundles (bounded at
+   1 MiB, never the binaries), verifies each against the trust anchors and pinned identities,
+   and binds subject digests to the index-declared sha256 — writing the three-state verdict
+   report to `verify/artifacts.json`. This pass never fails the build: an unfetchable or
+   malformed bundle degrades that version's verdict to not-attempted, it never takes the site
+   down. A report whose index identity does not match the verified index's is a build error
+   (`ERR_ARTIFACTS_REPORT_MISMATCH`).
+4. Derive the render model (every computed fact — verified, per-version verdicts, effective
+   status, default version, compat matrix, index age for the staleness banner — computed once,
+   here).
+5. Fetch Scarf download stats, best-effort (never fails the build; no real data source is
    provisioned today, so this degrades to "unavailable" and the stats section is not rendered).
-5. `astro build`.
-6. Copy the verified index bytes byte-for-byte into `dist/` and verify the copy — never a
+6. `astro build`.
+7. Copy the verified index bytes byte-for-byte into `dist/` and verify the copy — never a
    re-serialization, since the detached signature is computed over exact bytes.
 
-A failure at steps 1-4 exits non-zero **before** `astro build` ever runs — and `dist/` is
+A failure at steps 1-5 exits non-zero **before** `astro build` ever runs — and `dist/` is
 removed at pipeline start, so a failed build provably leaves no `dist/` at all. The deployed
 site is untouched until a fully successful build's artifact is deployed.
 
 ### Build inputs (environment)
 
-| Variable                       | Meaning                                                                                                                                           |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `REGISTRY_INDEX_URL`           | `--index` to pass the CLI (URL or local path). Unset = the CLI's default, the **live** index. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`). |
-| `REGISTRY_VERIFY_BIN`          | Path to a prebuilt `registry-verify` binary (CI builds one). Unset = `go run ./cmd/registry-verify` (requires Go — local dev).                    |
-| `REGISTRY_VERIFY_ANCHORS_FILE` | `--anchors-file` to pass the CLI — the test/offline anchors facility. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`).                         |
+| Variable                          | Meaning                                                                                                                                                                         |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REGISTRY_INDEX_URL`              | `--index` to pass the CLI (URL or local path). Unset = the CLI's default, the **live** index. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`).                               |
+| `REGISTRY_VERIFY_BIN`             | Path to a prebuilt `registry-verify` binary (CI builds one). Unset = `go run ./cmd/registry-verify` (requires Go — local dev).                                                  |
+| `REGISTRY_VERIFY_ANCHORS_FILE`    | `--anchors-file` to pass the CLI — the test/offline anchors facility. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`).                                                       |
+| `REGISTRY_VERIFY_TRUST_ROOT_FILE` | `--trust-root-file` to pass the CLI — the test/offline Sigstore trust root the `--artifacts` pass verifies bundles against. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`). |
 
-`REGISTRY_INDEX_URL` and `REGISTRY_VERIFY_ANCHORS_FILE` together are the functional equivalent of
-the deleted staleness override — they bypass the trust chain — so CI hard-fails on either instead
-of trusting a comment: a GitHub Actions build always verifies the **live** index against the
-**compiled-in** production anchors. Both remain fully available for local and offline builds.
+`REGISTRY_INDEX_URL`, `REGISTRY_VERIFY_ANCHORS_FILE`, and `REGISTRY_VERIFY_TRUST_ROOT_FILE` are the
+functional equivalent of
+the deleted staleness override — they bypass the trust chain — so CI hard-fails on any of them
+instead of trusting a comment: a GitHub Actions build always verifies the **live** index against
+the **compiled-in** production anchors and trust root. All three remain fully available for
+local and offline builds.
 
 The pre-S2 knobs `REGISTRY_INDEX_PATH` and `REGISTRY_MAX_STALENESS_MS` are **gone**: the build
 no longer reads a fixture from disk by default, and the staleness window is the CLI's own 7 days
@@ -158,9 +169,10 @@ self-terminating (the rebuild it triggers finds the state unchanged and pushes n
 
 ## Known, flagged gaps (not silently deferred)
 
-- Per-artifact verification at build time does not exist (see "Trust model" — S3). The index's
-  root signature IS verified at build time by the conduit CLI's verifier (S2), but the artifact
-  bytes themselves are only verified at install time, by your CLI.
+- The site verifies signature and provenance **bundles** at build time, never the artifact
+  **binaries** themselves (S3 fetches bundles only, bounded at 1 MiB). The bytes you actually
+  install are verified at install time, by your CLI — the site's badges vouch for what the
+  index declares, not for the file you download.
 - Scarf stats fetch targets a placeholder endpoint shape; no token is provisioned, so the section
   is removed rather than shown as permanently "unavailable" (an empty shelf would imply a data
   source exists when none does).
