@@ -4,3 +4,8 @@ dist
 public/search-manifest.json
 node_modules
 LICENSE.md
+# verify/state.json's exact bytes are contract: cmd/registry-verify writes it
+# compact (index.SaveState / goccy go-json) and the build's byte-identity check
+# compares against the CLI's own output. Prettier would reformat it and break
+# that round-trip, so the committed state file is prettier-ignored on purpose.
+verify/state.json
