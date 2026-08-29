@@ -29,6 +29,12 @@ const webRoot = path.resolve(here, '..');
 
 const DEFAULT_INDEX_URL = 'https://index.conduitdata.io/index.json';
 
+// S3 (adversarial review): every fetch below MUST time out. A host that
+// accepts-and-never-responds would otherwise hang the smoke job to GitHub's
+// 360-minute default (with concurrency cancel-in-progress: false, queuing
+// every later deploy). AbortSignal.timeout also fires on a dead connection.
+const FETCH_TIMEOUT_MS = 30_000;
+
 async function main(): Promise<void> {
   const siteUrl = process.env['SITE_URL'];
   if (!siteUrl) {
@@ -43,7 +49,9 @@ async function main(): Promise<void> {
   const builtIndexBytes = readFileSync(distIndexPath);
 
   console.log(`[smoke] fetching ${siteUrl}/`);
-  const listRes = await fetch(new URL('/', siteUrl));
+  const listRes = await fetch(new URL('/', siteUrl), {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!listRes.ok) throw new Error(`list page fetch failed: HTTP ${listRes.status}`);
   const listHtml = await listRes.text();
   if (!listHtml.includes('Connectors')) {
@@ -52,7 +60,9 @@ async function main(): Promise<void> {
   console.log('[smoke] list page OK');
 
   console.log(`[smoke] fetching ${siteUrl}/index.json`);
-  const indexRes = await fetch(new URL('/index.json', siteUrl));
+  const indexRes = await fetch(new URL('/index.json', siteUrl), {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
   if (!indexRes.ok) throw new Error(`/index.json fetch failed: HTTP ${indexRes.status}`);
   const liveIndexBytes = Buffer.from(await indexRes.arrayBuffer());
 
@@ -65,7 +75,7 @@ async function main(): Promise<void> {
   console.log('[smoke] deployed /index.json byte-matches the verified build output.');
 
   console.log(`[smoke] fetching ${indexUrl} (canonical index host)`);
-  const canonicalRes = await fetch(indexUrl);
+  const canonicalRes = await fetch(indexUrl, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!canonicalRes.ok) {
     throw new Error(
       `canonical index fetch failed: HTTP ${canonicalRes.status} — is the index.conduitdata.io ` +

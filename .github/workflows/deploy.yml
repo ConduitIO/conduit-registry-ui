@@ -125,6 +125,11 @@ jobs:
   smoke:
     needs: deploy
     runs-on: ubuntu-latest
+    # S3 (adversarial review): the smoke script's fetches each abort after 30s
+    # (AbortSignal.timeout), and this job cap is the second line of defense —
+    # a hung host must bound this job well under GitHub's 360-min default, or
+    # queued deploys (cancel-in-progress: false) back up behind it.
+    timeout-minutes: 15
     env:
       REGISTRY_VERIFY_BIN: .generated/registry-verify
     steps:
@@ -165,6 +170,9 @@ jobs:
   # floor behind. Verifies against the canonical host (the same index the
   # build verified). A push failure is a security-relevant event (the floor
   # did not advance) and fails the workflow after retries, like ci.yml.
+  # N4 (adversarial review): depends on build-and-test, NOT on deploy — the
+  # floor means "last VERIFIED index", not "last deployed". A deploy-pages
+  # failure must not stop the floor from advancing.
   ratchet-state:
     if: github.ref == 'refs/heads/main'
     needs: build-and-test
@@ -200,8 +208,10 @@ jobs:
           git commit -m "chore(verify): ratchet the high-water state to the last verified index
 
           Committed by the deploy workflow after a successful build so the
-          rollback floor stays armed across ephemeral runners. Self-terminating:
-          the rebuild this push triggers finds the state unchanged."
+          rollback floor stays armed across ephemeral runners. N3 (adversarial
+          review): a GITHUB_TOKEN push triggers no workflows, so nothing
+          rebuilds from this commit — self-termination comes from the next
+          dispatch/cron run finding the state already at the floor."
           for attempt in 1 2 3; do
             if git push origin main; then
               exit 0
