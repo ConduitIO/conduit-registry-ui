@@ -129,6 +129,7 @@ import (
 	"github.com/conduitio/conduit/pkg/foundation/cerrors/conduiterr"
 	"github.com/conduitio/conduit/pkg/registry"
 	"github.com/conduitio/conduit/pkg/registry/index"
+	"github.com/sigstore/sigstore-go/pkg/root"
 )
 
 const (
@@ -158,6 +159,16 @@ type options struct {
 	anchors     index.TrustAnchors
 	requireRoot bool // refuse an index accepted on a freshness signature alone
 	now         func() time.Time
+
+	// artifactsOut, when non-empty, additionally runs the per-version
+	// artifact verdict pass (WS4 S3) after the index pipeline succeeds and
+	// writes the report JSON there. See artifacts.go's package doc for the
+	// verdict semantics.
+	artifactsOut string
+	// trustRoot replaces the embedded production Sigstore trust root for
+	// the artifacts pass — the test/offline facility (--trust-root-file);
+	// production CI must never set it, exactly like --anchors-file.
+	trustRoot root.TrustedMaterial
 }
 
 // cliError is a CLI-owned failure with a stable code, for the failure modes
@@ -252,6 +263,10 @@ func realMain(args []string) int {
 		"refuse an index accepted on a freshness signature alone — only a root signature authorizes this build's trust core (the site build must pass this; see the ratchet-wedge note in the package doc)")
 	anchorsFile := fs.String("anchors-file", "",
 		"path to a TrustAnchors JSON file ({roots, freshness} maps of keyId -> base64 ed25519 public-key bytes) — test/offline facility; production CI must never set this (compiled-in production anchors are the default; see the package doc)")
+	artifactsOut := fs.String("artifacts", "",
+		"path to write the per-version artifact verdict report JSON — when set, ALSO verifies every artifact's signature + provenance bundles after the index pipeline succeeds (WS4 S3; verdicts never fail the build — see artifacts.go's package doc)")
+	trustRootFile := fs.String("trust-root-file", "",
+		"path to a Sigstore TrustedRoot JSON for the artifacts pass — test/offline facility; production CI must never set this (the embedded production Sigstore trust root is the default, exactly like --anchors-file)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -272,21 +287,52 @@ func realMain(args []string) int {
 		return exitFail
 	}
 
+	var trustRoot root.TrustedMaterial
+	if *trustRootFile != "" {
+		trustRoot, err = loadTrustRootFile(*trustRootFile)
+		if err != nil {
+			fail(err)
+			return exitFail
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
 	if err := run(ctx, options{
-		indexURL:    *indexURL,
-		outPath:     *outPath,
-		statePath:   *statePath,
-		anchors:     anchors,
-		requireRoot: *requireRoot,
-		now:         time.Now,
+		indexURL:     *indexURL,
+		outPath:      *outPath,
+		statePath:    *statePath,
+		anchors:      anchors,
+		requireRoot:  *requireRoot,
+		now:          time.Now,
+		artifactsOut: *artifactsOut,
+		trustRoot:    trustRoot,
 	}); err != nil {
 		fail(err)
 		return exitFail
 	}
 	return exitOK
+}
+
+// loadTrustRootFile loads a Sigstore TrustedRoot JSON file
+// (--trust-root-file) for the artifacts pass. Any failure maps to
+// CodeTrustAnchorsUnavailable — the same fail-closed code a build with no
+// usable anchors at all must get: a build whose trust root could not be
+// loaded verifies nothing and must not silently fall back to any other
+// root.
+func loadTrustRootFile(path string) (root.TrustedMaterial, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, conduiterr.Wrap(registry.CodeTrustAnchorsUnavailable,
+			fmt.Sprintf("could not read trust root file %s", path), err)
+	}
+	tm, err := root.NewTrustedRootFromJSON(data)
+	if err != nil {
+		return nil, conduiterr.Wrap(registry.CodeTrustAnchorsUnavailable,
+			fmt.Sprintf("trust root file %s is not a valid Sigstore TrustedRoot JSON", path), err)
+	}
+	return tm, nil
 }
 
 // fail prints the stable error code + message to stderr. Every verification
@@ -398,6 +444,30 @@ func run(ctx context.Context, opts options) error {
 	}
 	if err := index.SaveState(opts.statePath, newState); err != nil {
 		return err
+	}
+
+	// The per-version artifact verdict pass (WS4 S3) — only after the index
+	// pipeline fully succeeded, so verdicts are computed over root-verified
+	// payload data, never over an index this build refused. The report is
+	// written atomically like the raw index; verdict outcomes (fail /
+	// not_attempted) are DATA for the site and never fail the build — only
+	// the pass failing to complete (e.g. a report write error) returns an
+	// error here.
+	if opts.artifactsOut != "" {
+		report, err := verifyArtifacts(ctx, verified.Payload, artifactsOptions{
+			trustRoot: opts.trustRoot,
+			now:       opts.now,
+		})
+		if err != nil {
+			return err
+		}
+		data, err := json.MarshalIndent(report, "", "\t")
+		if err != nil {
+			return conduiterr.Wrap(conduiterr.CodeInternal, "could not marshal the artifacts verdict report", err)
+		}
+		if err := writeRawAtomic(opts.artifactsOut, data); err != nil {
+			return err
+		}
 	}
 	return nil
 }
