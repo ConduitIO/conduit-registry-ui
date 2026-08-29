@@ -1,0 +1,22 @@
+Conduit Registry UI
+
+Copyright 2026 Meroxa, Inc.
+
+This product is licensed under the Apache License, Version 2.0 (see
+LICENSE.md). The connector registry index rendered by this site is produced
+by the ConduitIO project (https://github.com/ConduitIO).
+
+Third-party notices
+-------------------
+
+The following Apache-2.0-licensed components are used by this project's
+build and test tooling, and are the property of their respective copyright
+holders. They are development-time dependencies only and are not shipped in
+the built site:
+
+- typescript (https://www.npmjs.com/package/typescript) — Apache License 2.0
+- playwright (https://www.npmjs.com/package/playwright) — Apache License 2.0
+
+All other direct dependencies (Astro, @astrojs/react, react, react-dom,
+semver, and the remaining toolchain) are MIT- or ISC-licensed; see
+package.json and package-lock.json for the complete list.
