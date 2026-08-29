@@ -6,6 +6,7 @@ import { EffectiveStatusTag } from '../../components/EffectiveStatusTag';
 import { RevocationBanner } from '../../components/RevocationBanner';
 import { CopyInstallButton } from '../../components/CopyInstallButton';
 import { CompatCell } from '../../components/CompatCell';
+import DeclaredMinimaNote from '../../components/DeclaredMinimaNote.astro';
 import { loadRenderModel } from '../../lib/loadRenderModel';
 import { sortVersionsDescending } from '../../lib/semver';
 
@@ -84,6 +85,7 @@ const installCommand = `conduit connectors install ${connector.name}`;
 
   <section aria-labelledby="versions-heading">
     <h2 id="versions-heading">Versions</h2>
+    <DeclaredMinimaNote />
     <table>
       <caption class="visually-hidden"
         >Published versions of {connector.displayName}, newest first</caption

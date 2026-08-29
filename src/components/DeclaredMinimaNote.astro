@@ -1,0 +1,18 @@
+---
+/**
+ * The honest labeling for the "Min Conduit" / "Min protocol" columns (WS4 plan
+ * §1, amended AC 4.5): those values are the PUBLISHER-DECLARED minimums — a
+ * floor, with no upper bound and no test evidence behind them. ConduitIO does
+ * not run a compat test matrix, and this site must never read as if it did.
+ *
+ * Same honesty pattern as SignatureNote.astro: real, always-visible page text
+ * (never a tooltip, never visually-hidden) — this is a qualification of a claim
+ * the table otherwise makes silently.
+ */
+export const DECLARED_MINIMA_NOTE_ID = 'declared-minima-note';
+---
+
+<p id={DECLARED_MINIMA_NOTE_ID}>
+  <code>Min Conduit</code> and <code>Min protocol</code> are the publisher-declared minimums — not a tested
+  compatibility claim. ConduitIO has not verified them against a test matrix.
+</p>
