@@ -44,9 +44,24 @@ import { readFileSync } from 'node:fs';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { BuildError, type BuildErrorCode } from './errors';
 
+/**
+ * The canonical build-free index publication host (WS4 S6). The registry repo
+ * (conduit-connector-registry) publishes index.json here with no UI build in
+ * the path — its freshness tracks re-signs, unlike the CLI's default URL
+ * (registry.conduitdata.io/index.json), which this site itself serves via
+ * dist/index.json. The deploy workflow builds against this URL so a re-sign
+ * reaches the site on the next dispatch/cron run; CI and local builds keep
+ * the CLI's compiled-in default. It is the ONLY --index the GitHub Actions
+ * guard below accepts.
+ */
+export const CANONICAL_INDEX_URL = 'https://index.conduitdata.io/index.json';
+
 export interface VerifyCliOptions {
   /** --index: URL or local path of the signed index. Omit to use the CLI's
-   * compiled-in default (registry.DefaultIndexURL — the live index). */
+   * compiled-in default (registry.DefaultIndexURL — the live index). In a
+   * GitHub Actions build the ONLY accepted value is CANONICAL_INDEX_URL (the
+   * deploy workflow's build input); everything else is refused with
+   * ERR_BUILD_CONFIG. */
   indexURL?: string;
   /** --anchors-file: TrustAnchors JSON ({roots, freshness} maps of keyId ->
    * base64 ed25519 public-key bytes). Test/offline runs only; see the
@@ -101,33 +116,36 @@ export function resolveVerifierCmd(env: NodeJS.ProcessEnv = process.env): {
  * CI hardening: in a GitHub Actions job (GITHUB_ACTIONS=true) the knobs that
  * point the build at something other than the live index, the compiled-in
  * anchors, or the embedded production Sigstore root are refused outright with
- * ERR_BUILD_CONFIG. REGISTRY_INDEX_URL + REGISTRY_VERIFY_ANCHORS_FILE
- * together are the functional equivalent of the deleted staleness override —
- * they bypass the entire trust chain — and REGISTRY_VERIFY_TRUST_ROOT_FILE
- * replaces the production Sigstore root the artifacts verdicts verify
- * against; "CI never sets them" is a comment, not a constraint. Local and
- * offline builds (GITHUB_ACTIONS unset) keep all three.
+ * ERR_BUILD_CONFIG. The ONE allowed --index in CI is the canonical build-free
+ * host (CANONICAL_INDEX_URL — the deploy workflow's build input, still the
+ * live index verified against the compiled-in production anchors); any other
+ * REGISTRY_INDEX_URL/--index (fixtures, file paths, arbitrary hosts), plus
+ * REGISTRY_VERIFY_ANCHORS_FILE and REGISTRY_VERIFY_TRUST_ROOT_FILE, are the
+ * functional equivalent of the deleted staleness override — they bypass the
+ * trust chain — so CI hard-fails instead of trusting a comment. Local and
+ * offline builds (GITHUB_ACTIONS unset) keep all of them.
  */
 export function verifyIndexViaCli(opts: VerifyCliOptions): Buffer {
   const env = opts.env ?? process.env;
-  if (
-    env['GITHUB_ACTIONS'] === 'true' &&
-    (opts.indexURL || opts.anchorsFile || opts.trustRootFile)
-  ) {
+  if (env['GITHUB_ACTIONS'] === 'true') {
     const knobs = [
-      opts.indexURL ? 'REGISTRY_INDEX_URL/--index' : null,
+      opts.indexURL && opts.indexURL !== CANONICAL_INDEX_URL ? 'REGISTRY_INDEX_URL/--index' : null,
       opts.anchorsFile ? 'REGISTRY_VERIFY_ANCHORS_FILE/--anchors-file' : null,
       opts.trustRootFile ? 'REGISTRY_VERIFY_TRUST_ROOT_FILE/--trust-root-file' : null,
     ]
       .filter(Boolean)
       .join(' and ');
-    throw new BuildError(
-      'ERR_BUILD_CONFIG',
-      `CI refuses ${knobs}: in a GitHub Actions build the index must be the live index ` +
-        `verified against the compiled-in production anchors. These knobs are the functional ` +
-        `equivalent of the deleted staleness override — they bypass the trust chain — so CI ` +
-        `hard-fails instead of trusting a comment. Set them only for local/offline runs.`
-    );
+    if (knobs) {
+      throw new BuildError(
+        'ERR_BUILD_CONFIG',
+        `CI refuses ${knobs}: in a GitHub Actions build the index must be the live index ` +
+          `(the CLI's compiled-in default, or the canonical build-free host ` +
+          `${CANONICAL_INDEX_URL} — never a fixture, a file path, or an arbitrary URL) ` +
+          `verified against the compiled-in production anchors. These knobs are the functional ` +
+          `equivalent of the deleted staleness override — they bypass the trust chain — so CI ` +
+          `hard-fails instead of trusting a comment. Set them only for local/offline runs.`
+      );
+    }
   }
   const { cmd, args: prefixArgs } = resolveVerifierCmd(env);
   const args = [

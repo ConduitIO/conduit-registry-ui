@@ -212,6 +212,9 @@ describe('verifyViaCli — fail-closed contract', () => {
         outPath: tmpOut,
         cwd: CWD,
       },
+      // A file path is still a trust-bypass even though it is "local" — only
+      // the canonical production host may be named in CI.
+      { indexURL: '/tmp/index.json', statePath: tmpState, outPath: tmpOut, cwd: CWD },
     ];
     for (const opts of cases) {
       let caught: BuildError | undefined;
@@ -230,6 +233,20 @@ describe('verifyViaCli — fail-closed contract', () => {
       expect(caught!.code, `case: ${JSON.stringify(opts)}`).toBe('ERR_BUILD_CONFIG');
       expect(caught!.message, `case: ${JSON.stringify(opts)}`).toContain('CI refuses');
     }
+  });
+
+  it('allows the canonical index URL in a GitHub Actions build (S6 deploy)', () => {
+    const recorder: { args: string[] } = { args: [] };
+    verifyIndexViaCli({
+      indexURL: 'https://index.conduitdata.io/index.json',
+      statePath: tmpState,
+      outPath: tmpOut,
+      cwd: CWD,
+      env: { GITHUB_ACTIONS: 'true' },
+      spawn: successSpawn(recorder),
+    });
+    expect(recorder.args).toContain('--index');
+    expect(recorder.args).toContain('https://index.conduitdata.io/index.json');
   });
 
   it('still allows the trust-bypass knobs outside CI (local/offline builds)', () => {

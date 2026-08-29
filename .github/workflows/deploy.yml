@@ -1,0 +1,229 @@
+name: Deploy
+
+# WS4 S6 (ws4-plan.md §2 S6; amended ACs 4.10/4.11): deploys this static site
+# to GitHub Pages at https://registry.conduitdata.io — fully decoupled from
+# the registry repo's index publication. Since S6, conduit-connector-registry
+# publishes the signed index BUILD-FREE at https://index.conduitdata.io/index.json
+# (no UI build in that path), and this workflow owns the human-facing site.
+# A failure in this workflow can delay a site refresh; it can never block a
+# signed index from reaching users.
+#
+# The build runs the full gate (format, lint, typecheck, tests, verify-live-
+# index build, a11y) and fails closed: any failure leaves no dist/ and no
+# deploy — the previously-deployed site stays up.
+#
+# The build fetches the index from the CANONICAL build-free host
+# (https://index.conduitdata.io/index.json via REGISTRY_INDEX_URL — the one
+# host whose freshness tracks re-signs; src/lib/verifyViaCli.ts's allowlist
+# accepts exactly this URL in GitHub Actions). CI (ci.yml) keeps the CLI's
+# compiled-in default URL. The post-deploy smoke byte-compares dist/index.json
+# against BOTH hosts — the deployed one (registry.conduitdata.io, what the CLI
+# fetches) and the canonical one — catching a stale CDN at either.
+#
+# Triggers (AC 4.11 — rebuild on every re-sign, plus a daily backstop):
+#   (a) push to main — a UI change deploys;
+#   (b) repository_dispatch(registry-index-updated) — sent by the registry
+#       repo's deploy.yml after every index publication (requires the
+#       REGISTRY_UI_DISPATCH_TOKEN PAT there; until provisioned, (c) and (d)
+#       are the cadence);
+#   (c) daily cron 06:17 UTC — rebuild regardless: bounds re-sign latency if
+#       the dispatch is missed, and continues the old daily Scarf-stats
+#       refresh the registry's deploy cron used to do;
+#   (d) workflow_dispatch — manual. Manual rebuild after a re-sign without the
+#       dispatch token:
+#         gh workflow run deploy.yml --repo ConduitIO/conduit-registry-ui
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * *'
+  repository_dispatch:
+    types: [registry-index-updated]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
+env:
+  SITE_URL: https://registry.conduitdata.io
+  # The canonical index host (S6). Allowed in GitHub Actions for exactly this
+  # URL (src/lib/verifyViaCli.ts CANONICAL_INDEX_URL); ci.yml does not set it.
+  REGISTRY_INDEX_URL: https://index.conduitdata.io/index.json
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      # Prebuilt verifier binary shared by the unit tests and the build step.
+      REGISTRY_VERIFY_BIN: .generated/registry-verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build the verifier CLI (cmd/registry-verify)
+        run: mkdir -p .generated && go build -o .generated/registry-verify ./cmd/registry-verify
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck (astro check)
+        run: npm run typecheck
+
+      - name: Unit tests (Vitest)
+        run: npm test
+
+      # Same hard gates as ci.yml, but against the CANONICAL index host (the
+      # workflow-level REGISTRY_INDEX_URL): a tampered/stale/rolled-back index
+      # exits non-zero here, no dist/ is produced, nothing deploys.
+      - name: Build site (verify canonical index -> derive -> astro build -> byte-verify)
+        run: npm run build
+
+      - name: Install Playwright's Chromium (for the a11y scan only)
+        run: npx playwright install --with-deps chromium
+
+      - name: Accessibility scan (axe-core via Playwright/Chromium)
+        run: npm run axe
+
+      - name: Upload the built site as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY_VERIFY_BIN: .generated/registry-verify
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build the verifier CLI (cmd/registry-verify)
+        run: mkdir -p .generated && go build -o .generated/registry-verify ./cmd/registry-verify
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Re-run the build in this job too, so dist/index.json (the thing we
+      # byte-compare the live hosts against) is the exact bytes this workflow
+      # run verified — never re-fetched, never re-derived.
+      - name: Rebuild (to get a local dist/index.json to compare against)
+        run: npm run build
+
+      - name: Post-deploy smoke (byte-compare /index.json at both hosts)
+        env:
+          SITE_URL: ${{ env.SITE_URL }}
+          INDEX_URL: ${{ env.REGISTRY_INDEX_URL }}
+        run: npm run smoke:deployed
+
+  # Mirrors ci.yml's ratchet-state job so the rollback floor advances on
+  # dispatch/cron/manual deploys too — the state file is the UI's memory
+  # across ephemeral runners, and a re-sign-driven deploy must not leave the
+  # floor behind. Verifies against the canonical host (the same index the
+  # build verified). A push failure is a security-relevant event (the floor
+  # did not advance) and fails the workflow after retries, like ci.yml.
+  ratchet-state:
+    if: github.ref == 'refs/heads/main'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Verify the canonical index and ratchet the state floor
+        run: |
+          mkdir -p .generated
+          go build -o .generated/registry-verify ./cmd/registry-verify
+          # Land on the branch (not detached) so the ratchet commit and push
+          # below have a real branch to move.
+          git switch main
+          ./.generated/registry-verify --require-root \
+            --index https://index.conduitdata.io/index.json \
+            --state verify/state.json --out /tmp/verified-index.json
+          if git diff --quiet verify/state.json; then
+            echo "state unchanged — nothing to commit"
+            exit 0
+          fi
+          echo "state changed — committing the ratcheted high-water mark"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add verify/state.json
+          git commit -m "chore(verify): ratchet the high-water state to the last verified index
+
+          Committed by the deploy workflow after a successful build so the
+          rollback floor stays armed across ephemeral runners. Self-terminating:
+          the rebuild this push triggers finds the state unchanged."
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              exit 0
+            fi
+            echo "push attempt $attempt failed — remote advanced; integrating and recomputing"
+            # A concurrent ratchet run may have committed a DIFFERENT state
+            # floor (the live index moved between our CLI invocation and the
+            # push). A three-way conflict on verify/state.json must never be
+            # resolved by replaying our stale commit on top of theirs: that
+            # would silently REGRESS the floor. Abandon the rebase and
+            # recompute the floor against the canonical index right now — the
+            # retried commit is always fresh, never stale.
+            if ! git pull --rebase origin main; then
+              git rebase --abort
+            fi
+            ./.generated/registry-verify --require-root \
+              --index https://index.conduitdata.io/index.json \
+              --state verify/state.json --out /tmp/verified-index.json
+            if ! git diff --quiet verify/state.json; then
+              git add verify/state.json
+              git commit --amend --no-edit -q
+            fi
+          done
+          echo "could not push the ratcheted state after 3 attempts — the rollback floor did not advance" >&2
+          exit 1
