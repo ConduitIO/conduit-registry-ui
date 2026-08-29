@@ -33,7 +33,10 @@ import {
  *
  * Everything is deterministic: the fixture render model fixes generatedAt,
  * the artifacts report, and index age, so the committed snapshot is stable
- * across runs and machines. No network, no Go, no live index.
+ * across runs and machines — the one exception (astro-island chunk hashes
+ * and uids, which Vite derives from the module graph and vary by checkout
+ * path) is normalized to placeholders before the snapshot comparison, see
+ * the 4.3 test. No network, no Go, no live index.
  */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const GENERATED_DIR = path.join(root, '.generated');
@@ -116,8 +119,19 @@ describe('catalogue pages — real astro build from fixture render models (WS4 S
 
     const html = readDist('connectors/postgres/index.html');
 
-    // The committed snapshot pins the whole rendered page byte-for-byte.
-    expect(html).toMatchSnapshot();
+    // The committed snapshot pins the whole rendered page byte-for-byte,
+    // except two build-artifact tokens that vary with the machine the build
+    // runs on (proven on CI: identical chunk bytes, different hashes — Vite
+    // derives the island chunk hash from the module graph, which embeds the
+    // absolute repo path; the astro-island uid is a hash of that URL). The
+    // snapshot would otherwise mismatch on every machine with a different
+    // checkout path. Normalize exactly those two tokens; everything else is
+    // pinned byte-for-byte, and a NEW machine-dependent token fails loudly
+    // with a visible diff.
+    const normalized = html
+      .replace(/(<astro-island uid=")[A-Za-z0-9_-]+(")/g, '$1[uid]$2')
+      .replace(/(component-url="\/_astro\/[^."]+\.)[A-Za-z0-9_-]{8}(\.js")/g, '$1[hash]$2');
+    expect(normalized).toMatchSnapshot();
 
     // Structural assertions pin the semantics the snapshot protects (the
     // snapshot is data, these are the AC): the key sections exist.
