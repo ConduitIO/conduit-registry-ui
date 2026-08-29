@@ -7,10 +7,10 @@ import type {
   YankReason,
 } from './schema';
 import { ALL_ARCH, ALL_OS } from './schema';
-import { deriveVerified } from './deriveVerified';
 import { effectiveConnectorStatus, type EffectiveStatus } from './effectiveStatus';
 import { pickDefaultVersion } from './pickDefaultVersion';
 import { isReservedRouteSegment } from './reserved';
+import { verdictForVersion, type ArtifactReport, type ArtifactVerdict } from './verdicts';
 import { BuildError } from './errors';
 
 export interface CompatCellModel {
@@ -26,7 +26,13 @@ export interface RenderedVersion {
   minProtocolVersion: string;
   deprecated: boolean;
   yanked?: YankReason;
-  verified: boolean;
+  /** The build-time signature verdict (WS4 S3): pass / fail(reason) /
+   * not_attempted(reason). Three states, never a boolean — no presence-pass:
+   * a version with no bundle references is not_attempted, not "verified". */
+  verdict: ArtifactVerdict;
+  verdictReason?: string;
+  /** The verifier CLI's wall clock at verdict time — the badge's as-of date. */
+  verdictCheckedAt?: string;
   isDefault: boolean;
   compat: CompatCellModel[];
 }
@@ -69,10 +75,28 @@ export interface RenderModel {
   generatedAt: string;
   indexVersion: number;
   indexTimestamp: string;
+  /** The index's ROOT-signature verdict (the CLI's exit 0 with
+   * --require-root) — distinct from per-version signature verdicts. */
   verified: boolean;
+  /** The conduit module version the verifier CLI was built from (the footer's
+   * "verifier version", WS4 4.14) — real value from the build, not
+   * hardcoded. Absent when the artifacts pass did not run (unit tests). */
+  verifierVersion?: string;
+  /** Index age in ms at build time (generatedAt minus index.timestamp) — the
+   * staleness banner's input. The build refuses an index older than the CLI's
+   * 7-day window; the banner warns before that. */
+  indexAgeMs: number;
   connectors: RenderedConnector[];
   searchManifest: SearchManifestEntry[];
 }
+
+/** The verifier CLI's staleness window (index.DefaultMaxStaleness) and the
+ * warning grace the banner lives in: a build succeeds inside the 7-day
+ * window, but with less than a day left the site warns that the next build
+ * will fail until a fresh index is published (WS4 4.14). */
+export const STALENESS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const STALENESS_WARN_GRACE_MS = 24 * 60 * 60 * 1000;
+export const STALENESS_BANNER_THRESHOLD_MS = STALENESS_WINDOW_MS - STALENESS_WARN_GRACE_MS;
 
 function buildCompatMatrix(
   connector: Connector,
@@ -102,9 +126,10 @@ function buildCompatMatrix(
  */
 export function buildRenderModel(
   payload: IndexPayload,
-  opts: { verified?: boolean; generatedAt?: string } = {}
+  opts: { verified?: boolean; generatedAt?: string; artifacts?: ArtifactReport } = {}
 ): RenderModel {
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
+  const indexAgeMs = Math.max(0, Date.parse(generatedAt) - Date.parse(payload.index.timestamp));
   const seenNames = new Set<string>();
   const connectors: RenderedConnector[] = payload.connectors.map((connector) => {
     if (isReservedRouteSegment(connector.name)) {
@@ -128,17 +153,29 @@ export function buildRenderModel(
     const suppressInstallCommand = effectiveStatus === 'revoked' || allVersionsYanked;
     const defaultVersion = pickDefaultVersion(connector);
 
-    const versions: RenderedVersion[] = connector.versions.map((v) => ({
-      version: v.version,
-      ...(v.releasedAt !== undefined ? { releasedAt: v.releasedAt } : {}),
-      minConduitVersion: v.minConduitVersion,
-      minProtocolVersion: v.minProtocolVersion,
-      deprecated: Boolean(v.deprecated),
-      ...(v.yanked !== undefined ? { yanked: v.yanked } : {}),
-      verified: deriveVerified(v, connector),
-      isDefault: defaultVersion?.version === v.version,
-      compat: buildCompatMatrix(connector, v.version),
-    }));
+    const revoked = connector.publisher.revoked !== undefined;
+    const versions: RenderedVersion[] = connector.versions.map((v) => {
+      const verdict = verdictForVersion(
+        opts.artifacts,
+        payload,
+        connector.name,
+        revoked,
+        v.version
+      );
+      return {
+        version: v.version,
+        ...(v.releasedAt !== undefined ? { releasedAt: v.releasedAt } : {}),
+        minConduitVersion: v.minConduitVersion,
+        minProtocolVersion: v.minProtocolVersion,
+        deprecated: Boolean(v.deprecated),
+        ...(v.yanked !== undefined ? { yanked: v.yanked } : {}),
+        verdict: verdict.verdict,
+        ...(verdict.reason !== undefined ? { verdictReason: verdict.reason } : {}),
+        ...(verdict.checkedAt !== undefined ? { verdictCheckedAt: verdict.checkedAt } : {}),
+        isDefault: defaultVersion?.version === v.version,
+        compat: buildCompatMatrix(connector, v.version),
+      };
+    });
 
     return {
       name: connector.name,
@@ -169,6 +206,8 @@ export function buildRenderModel(
     indexVersion: payload.index.version,
     indexTimestamp: payload.index.timestamp,
     verified: opts.verified ?? false,
+    ...(opts.artifacts !== undefined ? { verifierVersion: opts.artifacts.verifierVersion } : {}),
+    indexAgeMs,
     connectors,
     searchManifest,
   };

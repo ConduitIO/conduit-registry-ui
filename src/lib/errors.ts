@@ -25,7 +25,10 @@ export type BuildErrorCode =
   | 'ERR_TRUST_ANCHOR_EXPIRED'
   | 'ERR_INDEX_TOO_LARGE'
   // Build-pipeline codes not emitted by the CLI:
-  | 'ERR_BUILD_CONFIG';
+  | 'ERR_BUILD_CONFIG'
+  // The artifacts report (--artifacts) and the verified index do not describe
+  // the same index run (verdicts.ts's coherence guard).
+  | 'ERR_ARTIFACTS_REPORT_MISMATCH';
 
 export class BuildError extends Error {
   readonly code: BuildErrorCode;

@@ -49,6 +49,10 @@
  *                                GitHub Actions (ERR_BUILD_CONFIG), same
  *                                reason: CI verifies against the compiled-in
  *                                production anchors, always.
+ *   REGISTRY_VERIFY_TRUST_ROOT_FILE  --trust-root-file to pass the CLI;
+ *                                replaces the embedded production Sigstore
+ *                                root for the artifacts verdicts pass.
+ *                                REFUSED in GitHub Actions, same reason.
  *
  * The pre-S2 knobs REGISTRY_INDEX_PATH and REGISTRY_MAX_STALENESS_MS are
  * GONE: the build no longer reads a fixture from disk by default, and the
@@ -65,6 +69,7 @@ import { buildRenderModel } from '../src/lib/renderModel';
 import { mergeScarfStats } from '../src/lib/scarfStats';
 import { fetchAllScarfStats } from './fetchScarfStats';
 import { BuildError } from '../src/lib/errors';
+import type { ArtifactReport } from '../src/lib/verdicts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(here, '..');
@@ -82,6 +87,9 @@ const DIST_DIR = path.join(webRoot, 'dist');
 const STATE_PATH = path.join(webRoot, 'verify', 'state.json');
 // The CLI writes the verified RAW bytes here; step 7 copies them into dist/.
 const VERIFIED_INDEX_PATH = path.join(webRoot, 'verify', 'index.json');
+// The CLI writes the per-version artifact verdict report here (WS4 S3,
+// --artifacts); step 3 merges it into the render model.
+const ARTIFACTS_REPORT_PATH = path.join(webRoot, 'verify', 'artifacts.json');
 
 async function main(): Promise<void> {
   // Step 0: never let a stale dist/ from a previous run be mistaken for this
@@ -105,6 +113,14 @@ async function main(): Promise<void> {
     ...(process.env['REGISTRY_VERIFY_ANCHORS_FILE']
       ? { anchorsFile: process.env['REGISTRY_VERIFY_ANCHORS_FILE'] }
       : {}),
+    ...(process.env['REGISTRY_VERIFY_TRUST_ROOT_FILE']
+      ? { trustRootFile: process.env['REGISTRY_VERIFY_TRUST_ROOT_FILE'] }
+      : {}),
+    // The site build ALWAYS runs the artifacts pass: the per-version
+    // verdicts (and the footer's verifier version) are build data, not an
+    // option. Without --trust-root-file it verifies against the embedded
+    // production Sigstore trust root — the real production path.
+    artifactsOut: ARTIFACTS_REPORT_PATH,
     statePath: STATE_PATH,
     outPath: VERIFIED_INDEX_PATH,
     cwd: webRoot,
@@ -135,9 +151,29 @@ async function main(): Promise<void> {
       `(root-verified by the conduit verifier CLI)`
   );
 
-  // Step 3: derive render model (throws BuildError on e.g. reserved-name collision).
-  // The CLI's exit 0 with --require-root IS the root-verified verdict.
-  let model = buildRenderModel(typedPayload, { verified: true });
+  // Step 2.5: read the artifacts verdict report the CLI wrote in the same
+  // run (WS4 S3). The CLI's exit 0 covered the index pipeline; the artifacts
+  // pass runs after and never fails the build — but a MISSING report is a
+  // build bug (the --artifacts flag is always passed) and fails closed.
+  let artifactsReport: ArtifactReport | undefined;
+  try {
+    artifactsReport = JSON.parse(readFileSync(ARTIFACTS_REPORT_PATH, 'utf-8')) as ArtifactReport;
+  } catch (err) {
+    throw new BuildError(
+      'ERR_ARTIFACTS_REPORT_MISMATCH',
+      `verifier CLI exited 0 but wrote no artifacts report at ${ARTIFACTS_REPORT_PATH}: ` +
+        `${(err as Error).message}`
+    );
+  }
+
+  // Step 3: derive render model (throws BuildError on e.g. reserved-name
+  // collision or a verdicts report that does not describe the verified
+  // index). The CLI's exit 0 with --require-root IS the root-verified
+  // verdict; the artifacts report carries the per-version verdicts.
+  let model = buildRenderModel(typedPayload, {
+    verified: true,
+    artifacts: artifactsReport,
+  });
 
   // Step 4: Scarf stats, best-effort — a Scarf-fetch failure never throws
   // past fetchAllScarfStats (it degrades to `unavailable: true` per connector).
