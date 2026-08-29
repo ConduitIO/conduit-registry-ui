@@ -13,17 +13,15 @@ before reading anything on this site as a security claim.
 This repo's history starts life as `web/` inside `ConduitIO/conduit-connector-registry`
 (commits `36f6b28` and `9c92e6c`, both by the original author, preserved via
 `git filter-repo --path web/ --path-rename web/:` — a full history split, not a squashed
-import). That repo now owns only the signed index (`index/`, served at
-`registry.conduitdata.io/index.json`, which is `registry.DefaultIndexURL` compiled into every
-shipped `conduit` binary). This repo owns the web UI that reads it. See WS4's plan
-(`ws4-registry-ui-plan.md` §4, "Decouple the index from the site") for why: shipping the two
-together meant an a11y or lint failure in the UI could block a security yank from reaching
-users.
-
-**This slice (S1) is scaffold-and-relocate only.** It does not change what
-`registry.conduitdata.io/index.json` serves, does not deploy this site anywhere, and does not
-touch the verified badge's logic. Those land in later slices — see "Trust model" below and
-"What's not here yet".
+import). Since WS4 S6 the split is complete and the `web/` copy is deleted: the registry repo
+owns only the signed index (`index/`, published build-free at
+`index.conduitdata.io/index.json` — no UI build in that path), and this repo owns the web UI,
+deployed at `registry.conduitdata.io`. The CLI's compiled-in default
+(`registry.DefaultIndexURL`, `https://registry.conduitdata.io/index.json`) never moves: this
+site's build byte-copies the verified index into `dist/`, so that URL serves the same signed
+bytes. See WS4's plan (`ws4-registry-ui-plan.md` §4, "Decouple the index from the site") for
+why: shipping the two together meant an a11y or lint failure in the UI could block a security
+yank from reaching users.
 
 ## Stack
 
@@ -90,12 +88,28 @@ One thing the site still does not do, and will not: it never downloads or checks
 **binaries** (only the small signature/provenance bundles), so an install-time check by your CLI
 remains the authoritative check of the bytes you actually get.
 
+## Deploy (WS4 S6)
+
+`.github/workflows/deploy.yml` deploys this static site to GitHub Pages at
+`registry.conduitdata.io`, decoupled from the registry repo's index publication (amended AC
+4.10: a UI failure can delay a site refresh, never a signed index). Triggers, per amended AC
+4.11: push to `main`; `repository_dispatch(registry-index-updated)` from the registry repo's
+deploy.yml after every index publication; a daily cron (06:17 UTC) that rebuilds regardless;
+and manual `workflow_dispatch`. The deploy build runs the full gate (format, lint, typecheck,
+tests, build, a11y) and fails closed — no `dist/`, no deploy, previous site stays up.
+
+The deploy build fetches the index from the **canonical build-free host**
+(`index.conduitdata.io/index.json` via `REGISTRY_INDEX_URL`) — the one host whose freshness
+tracks re-signs — while CI keeps the CLI's compiled-in default URL. The post-deploy smoke
+(`scripts/post-deploy-smoke.ts`) byte-compares `dist/index.json` against both the deployed
+host (what the CLI fetches) and the canonical host, catching a stale CDN at either.
+
+Pre-merge, `registry.conduitdata.io` still points at the registry repo's Pages project; the
+domain moves to this repo's Pages project when this deploy workflow first runs (remove the
+custom domain from the registry repo's Pages settings, add it here — see the S6 PR body for
+the exact steps).
+
 ## What's not here yet
-
-- A production deploy of this site, or any DNS/hosting change. `registry.conduitdata.io` stays
-  with `conduit-connector-registry` until S6.
-
-## Out of scope for v0.20
 
 - **Config-schema summaries on connector pages** (amended AC 4.3): the frozen index schema
   carries no config schema, so per-connector pages show versions, install command, and the
@@ -111,11 +125,13 @@ remains the authoritative check of the bytes you actually get.
 ## Build pipeline (`npm run build`, `scripts/build-site.ts`)
 
 1. **Fetch + verify the live signed index with the Go verifier CLI** (`cmd/registry-verify`,
-   `--require-root`; the CLI's compiled-in default is `registry.DefaultIndexURL` —
-   `registry.conduitdata.io/index.json`). The CLI imports the conduit CLI's own verifier and
-   compiled-in trust anchors: root-signature check, freshness-only acceptance refused outright,
-   rollback against the committed high-water state (`verify/state.json`), and the CLI's own
-   7-day staleness window. Any failure — `ERR_INDEX_UNREACHABLE`, `ERR_INDEX_INTEGRITY`,
+   `--require-root`; by default the CLI's compiled-in default, `registry.DefaultIndexURL` —
+   `registry.conduitdata.io/index.json`. The deploy workflow points it at the canonical
+   build-free host, `index.conduitdata.io/index.json` — the one host whose freshness tracks
+   re-signs, WS4 S6). The CLI imports the conduit CLI's own verifier and compiled-in trust
+   anchors: root-signature check, freshness-only acceptance refused outright, rollback against
+   the committed high-water state (`verify/state.json`), and the CLI's own 7-day staleness
+   window. Any failure — `ERR_INDEX_UNREACHABLE`, `ERR_INDEX_INTEGRITY`,
    `ERR_INDEX_ROLLBACK`, `ERR_INDEX_STALE`, ... — exits non-zero here.
 2. The CLI's exit 0 **is** the verification verdict; the verified RAW bytes it wrote to
    `verify/index.json` flow onward untouched (never re-parsed into a trust decision).
@@ -142,19 +158,19 @@ site is untouched until a fully successful build's artifact is deployed.
 
 ### Build inputs (environment)
 
-| Variable                          | Meaning                                                                                                                                                                         |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `REGISTRY_INDEX_URL`              | `--index` to pass the CLI (URL or local path). Unset = the CLI's default, the **live** index. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`).                               |
-| `REGISTRY_VERIFY_BIN`             | Path to a prebuilt `registry-verify` binary (CI builds one). Unset = `go run ./cmd/registry-verify` (requires Go — local dev).                                                  |
-| `REGISTRY_VERIFY_ANCHORS_FILE`    | `--anchors-file` to pass the CLI — the test/offline anchors facility. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`).                                                       |
-| `REGISTRY_VERIFY_TRUST_ROOT_FILE` | `--trust-root-file` to pass the CLI — the test/offline Sigstore trust root the `--artifacts` pass verifies bundles against. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`). |
+| Variable                          | Meaning                                                                                                                                                                                                                                                                                                  |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REGISTRY_INDEX_URL`              | `--index` to pass the CLI (URL or local path). Unset = the CLI's default, the **live** index. In GitHub Actions the **only accepted value** is the canonical build-free host `https://index.conduitdata.io/index.json` (the deploy workflow sets it); anything else is **refused** (`ERR_BUILD_CONFIG`). |
+| `REGISTRY_VERIFY_BIN`             | Path to a prebuilt `registry-verify` binary (CI builds one). Unset = `go run ./cmd/registry-verify` (requires Go — local dev).                                                                                                                                                                           |
+| `REGISTRY_VERIFY_ANCHORS_FILE`    | `--anchors-file` to pass the CLI — the test/offline anchors facility. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`).                                                                                                                                                                                |
+| `REGISTRY_VERIFY_TRUST_ROOT_FILE` | `--trust-root-file` to pass the CLI — the test/offline Sigstore trust root the `--artifacts` pass verifies bundles against. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`).                                                                                                                          |
 
-`REGISTRY_INDEX_URL`, `REGISTRY_VERIFY_ANCHORS_FILE`, and `REGISTRY_VERIFY_TRUST_ROOT_FILE` are the
-functional equivalent of
-the deleted staleness override — they bypass the trust chain — so CI hard-fails on any of them
-instead of trusting a comment: a GitHub Actions build always verifies the **live** index against
-the **compiled-in** production anchors and trust root. All three remain fully available for
-local and offline builds.
+`REGISTRY_VERIFY_ANCHORS_FILE`, `REGISTRY_VERIFY_TRUST_ROOT_FILE`, and any
+`REGISTRY_INDEX_URL` other than the canonical build-free host are the functional equivalent of
+the deleted staleness override — they bypass the trust chain — so CI hard-fails on them instead
+of trusting a comment: a GitHub Actions build always verifies the **live** index against the
+**compiled-in** production anchors and trust root. All remain fully available for local and
+offline builds.
 
 The pre-S2 knobs `REGISTRY_INDEX_PATH` and `REGISTRY_MAX_STALENESS_MS` are **gone**: the build
 no longer reads a fixture from disk by default, and the staleness window is the CLI's own 7 days
@@ -175,16 +191,16 @@ self-terminating (the rebuild it triggers finds the state unchanged and pushes n
 
 ## Scripts
 
-| Command                                 | Purpose                                                                                                                                        |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run dev`                           | Astro dev server                                                                                                                               |
-| `npm run build`                         | The full pipeline above                                                                                                                        |
-| `npm run typecheck`                     | `astro check` (TypeScript, strict)                                                                                                             |
-| `npm run lint` / `npm run format:check` | ESLint (jsx-a11y on) / Prettier                                                                                                                |
-| `npm test`                              | Vitest unit + component + build-pipeline-integration tests                                                                                     |
-| `npm run axe`                           | Automated a11y scan (axe-core via real headless Chromium) against the built `dist/`                                                            |
-| `npm run smoke:deployed`                | Post-deploy check: byte-compares the live `/index.json`, checks the list page (not run in this repo's CI yet — no deploy target here until S6) |
-| `npm run check:tokens`                  | Diffs `tokens.css` against `conduit-ui`'s copy                                                                                                 |
+| Command                                 | Purpose                                                                                                                                                                            |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run dev`                           | Astro dev server                                                                                                                                                                   |
+| `npm run build`                         | The full pipeline above                                                                                                                                                            |
+| `npm run typecheck`                     | `astro check` (TypeScript, strict)                                                                                                                                                 |
+| `npm run lint` / `npm run format:check` | ESLint (jsx-a11y on) / Prettier                                                                                                                                                    |
+| `npm test`                              | Vitest unit + component + build-pipeline-integration tests                                                                                                                         |
+| `npm run axe`                           | Automated a11y scan (axe-core via real headless Chromium) against the built `dist/`                                                                                                |
+| `npm run smoke:deployed`                | Post-deploy check (run by the S6 deploy workflow): checks the list page, byte-compares the deployed `/index.json` and the canonical host's `/index.json` against `dist/index.json` |
+| `npm run check:tokens`                  | Diffs `tokens.css` against `conduit-ui`'s copy                                                                                                                                     |
 
 ## Known, flagged gaps (not silently deferred)
 

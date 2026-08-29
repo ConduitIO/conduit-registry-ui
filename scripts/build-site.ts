@@ -39,8 +39,15 @@
  *   REGISTRY_INDEX_URL          --index to pass the CLI (URL or local path);
  *                                unset = the CLI's default, the LIVE index
  *                                at registry.conduitdata.io/index.json.
- *                                REFUSED in GitHub Actions (ERR_BUILD_CONFIG):
- *                                CI must verify the live index.
+ *                                In GitHub Actions the ONLY accepted value is
+ *                                the canonical build-free host
+ *                                https://index.conduitdata.io/index.json (the
+ *                                deploy workflow sets it so re-signs reach the
+ *                                site; see src/lib/verifyViaCli.ts's
+ *                                CANONICAL_INDEX_URL). Any other value is
+ *                                refused with ERR_BUILD_CONFIG — CI must
+ *                                verify the live index, never a fixture or a
+ *                                file path.
  *   REGISTRY_VERIFY_BIN         path to a prebuilt registry-verify binary;
  *                                unset = `go run ./cmd/registry-verify`
  *                                (requires Go — used for local dev).
