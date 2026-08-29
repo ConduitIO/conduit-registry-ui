@@ -1,27 +1,30 @@
 name: CI
 
-# WS4 S1 (ws4-registry-ui-plan.md §4, §8): build -> typecheck/lint -> unit
+# WS4 S2 (ws4-registry-ui-plan.md §4, §8): build -> typecheck/lint -> unit
 # tests -> a11y scan. Mirrors the gate that lived at
 # conduit-connector-registry's `.github/workflows/ci.yml` for `web/`, adapted
 # for this repo's flat layout (this repo IS the former `web/`, relocated with
 # history — see README.md "Relocation").
 #
-# This repo no longer colocates the signed index (`index/` stays in
-# conduit-connector-registry — see README.md "Trust model"), so the build
-# step below consumes a fixture. That fixture is synthesized fresh at build
-# time (scripts/generate-fixture.ts stamps the current time onto the
-# committed template `test/fixtures/sample-index.json`, writing the
-# gitignored `.generated/sample-index.json`), so this workflow runs the
-# freshness gate at the REAL default window (REGISTRY_MAX_STALENESS_MS, 30
-# days) with no override. A genuinely stale index — e.g. an old fixture
-# passed via REGISTRY_INDEX_PATH — fails the build with ERR_INDEX_STALE, and
-# that is deliberate: an earlier 10-year REGISTRY_MAX_STALENESS_MS override
-# (deleted in WS4 S1) masked fixture rot instead of fixing it, the exact
-# "green over stale" pattern this project's trust model exists to prevent.
-# The fixture makes no trust claim and never affects what
-# registry.conduitdata.io/index.json serves — that stays with
-# conduit-connector-registry, unaffected by this repo's CI (WS4 plan §4's
-# "UI deploy cannot gate index publication").
+# Since S2 PR-2 the build step verifies the LIVE signed index with the Go
+# verifier CLI (cmd/registry-verify, --require-root — the conduit CLI's own
+# verifier + compiled-in trust anchors, pinned as a module dependency) before
+# `astro build` runs. Any failure — unreachable, tampered, rolled back, or
+# stale beyond the CLI's 7-day window — exits non-zero and fails the build.
+#
+# THE STALENESS ALARM IS THE POINT. A red build-and-test with no code change
+# means the live index is stale (>7 days), tampered, or rolled back: a problem
+# with the index, not with this repo. The fix is a human action (refresh/re-sign
+# the index, or explicitly acknowledge the state), then re-dispatch — never a
+# staleness override. There is deliberately no knob to widen the window: the
+# pre-S2 REGISTRY_MAX_STALENESS_MS override (deleted in WS4 S1) masked fixture
+# rot instead of fixing it, the exact "green over stale" pattern this project's
+# trust model exists to prevent.
+#
+# The ratchet-state job (main push only) commits the updated high-water state
+# (verify/state.json) back to main after a successful build, so the rollback
+# floor stays armed across CI runs. It is self-terminating: the rebuild it
+# triggers finds the state unchanged and pushes nothing.
 on:
   pull_request:
   push:
@@ -33,6 +36,11 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    env:
+      # The prebuilt verifier binary, shared by the unit-test run (the vitest
+      # integration suite uses it against a locally generated signed fixture)
+      # and the build step (live index).
+      REGISTRY_VERIFY_BIN: .generated/registry-verify
     steps:
       - uses: actions/checkout@v4
 
@@ -41,6 +49,14 @@ jobs:
           node-version: '22'
           cache: 'npm'
           cache-dependency-path: package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build the verifier CLI (cmd/registry-verify)
+        run: mkdir -p .generated && go build -o .generated/registry-verify ./cmd/registry-verify
 
       - name: Install dependencies
         run: npm ci
@@ -57,10 +73,10 @@ jobs:
       - name: Unit tests (Vitest)
         run: npm test
 
-      # Build step (README.md "Build pipeline"): read fixture -> structural
-      # verify (stubbed, see README "Trust model") -> freshness -> derive ->
-      # scarf stats (best-effort) -> astro build -> byte-verify dist/index.json.
-      - name: Build site (fixture index -> derive -> astro build -> byte-verify)
+      # Build step (README.md "Build pipeline"): verify the LIVE index with
+      # cmd/registry-verify --require-root -> derive -> scarf stats
+      # (best-effort) -> astro build -> byte-verify dist/index.json.
+      - name: Build site (live index verify -> derive -> astro build -> byte-verify)
         run: npm run build
 
       - name: Install Playwright's Chromium (for the a11y scan only)
@@ -78,3 +94,57 @@ jobs:
           name: site-dist
           path: dist
           retention-days: 7
+
+  # Ratchets the committed high-water state (verify/state.json) after a
+  # successful main-branch build, so the rollback floor tracks the last
+  # VERIFIED index version across ephemeral CI runners (see README.md "CI and
+  # the staleness alarm"). Runs the CLI once more against the live index;
+  # commits only the state file, and only when it changed. A push failure is
+  # a security-relevant event (the rollback floor did not advance), so it
+  # fails the job after retries — a human sees it, the same way they see a
+  # stale-index red build.
+  ratchet-state:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Verify the live index and ratchet the state floor
+        run: |
+          mkdir -p .generated
+          go build -o .generated/registry-verify ./cmd/registry-verify
+          # Land on the branch (not detached) so the ratchet commit and push
+          # below have a real branch to move.
+          git switch main
+          ./.generated/registry-verify --require-root \
+            --state verify/state.json --out /tmp/verified-index.json
+          if git diff --quiet verify/state.json; then
+            echo "state unchanged — nothing to commit"
+            exit 0
+          fi
+          echo "state changed — committing the ratcheted high-water mark"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add verify/state.json
+          git commit -m "chore(verify): ratchet the high-water state to the last verified index
+
+          Committed by CI after a successful main-branch build so the rollback
+          floor stays armed across ephemeral runners. Self-terminating: the
+          rebuild this push triggers finds the state unchanged."
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              exit 0
+            fi
+            echo "push attempt $attempt failed — rebasing and retrying"
+            git pull --rebase origin main
+          done
+          echo "could not push the ratcheted state after 3 attempts — the rollback floor did not advance" >&2
+          exit 1
