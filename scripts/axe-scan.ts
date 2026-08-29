@@ -2,10 +2,10 @@
 /**
  * Automated a11y gate (step6-web-ui.md §3 step 8, §7): runs axe-core, in a real
  * headless browser (Playwright/Chromium), against the LIST page and one
- * connector detail page per status variant (active/verified, deprecated,
- * yanked, revoked). Zero critical/serious violations gates the deploy — CI
- * treats a non-zero exit from this script as a failed build (see
- * .github/workflows/ci.yml).
+ * connector + one processor detail page per status variant (active/verified,
+ * deprecated, yanked, revoked — processors since S5). Zero critical/serious
+ * violations gates the deploy — CI treats a non-zero exit from this script as
+ * a failed build (see .github/workflows/ci.yml).
  *
  * A real browser (not jsdom) is used deliberately: axe-core's `color-contrast`
  * rule and several other checks depend on actual layout/paint, which jsdom
@@ -89,6 +89,20 @@ function representativeConnectorRoutes(): string[] {
   return [...byStatus.values()].map((name) => `/connectors/${name}/`);
 }
 
+/** The same status-variant coverage for the processors section (S5 — amended
+ * AC 4.9 pages are a11y-gated like every other page). */
+function representativeProcessorRoutes(): string[] {
+  if (!existsSync(renderModelPath)) {
+    throw new Error(`render model not found at ${renderModelPath} — run \`npm run build\` first`);
+  }
+  const model = JSON.parse(readFileSync(renderModelPath, 'utf-8')) as RenderModel;
+  const byStatus = new Map<string, string>();
+  for (const p of model.processors) {
+    if (!byStatus.has(p.effectiveStatus)) byStatus.set(p.effectiveStatus, p.name);
+  }
+  return [...byStatus.values()].map((name) => `/processors/${name}/`);
+}
+
 async function main(): Promise<void> {
   if (!existsSync(distDir)) {
     throw new Error(`${distDir} not found — run \`npm run build\` before the a11y scan`);
@@ -97,7 +111,7 @@ async function main(): Promise<void> {
     throw new Error(`axe-core browser bundle not found at ${AXE_CORE_PATH}`);
   }
 
-  const routes = ['/', ...representativeConnectorRoutes()];
+  const routes = ['/', ...representativeConnectorRoutes(), ...representativeProcessorRoutes()];
   const server = await startStaticServer(distDir);
   const browser = await chromium.launch();
 

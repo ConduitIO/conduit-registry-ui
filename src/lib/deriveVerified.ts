@@ -1,4 +1,11 @@
-import type { Connector, ConnectorVersion } from './schema';
+import type {
+  Connector,
+  ConnectorVersion,
+  Processor,
+  ProcessorVersion,
+  Revocation,
+  YankReason,
+} from './schema';
 
 /**
  * The verified-badge derivation (step6-web-ui.md §4 — "the load-bearing part").
@@ -26,6 +33,12 @@ import type { Connector, ConnectorVersion } from './schema';
  *   see src/lib/verifyViaCli.ts) — a compromised CDN/origin serving a tampered
  *   index without ever touching an artifact or signature would otherwise be a
  *   laundering vector, since the UI never downloads artifacts itself.
+ *
+ * Processors are covered by the SAME two-layer argument: `processor-plugins
+ * install` (the CLI's own processor install path) verifies the index envelope
+ * and per-artifact Sigstore/SLSA against the processor's pinned identity exactly
+ * like connectors do, and this site's badge makes exactly the same narrow
+ * presence-based claim for a processor version — never more.
  *
  * Residual risk, stated plainly (CLAUDE.md's "say what was actually verified"):
  * this site does NOT independently re-run `cosign verify`/Rekor-inclusion checks
@@ -67,12 +80,30 @@ export function hasProvenancePresent(version: ConnectorVersion): boolean {
   );
 }
 
-export function isYanked(version: ConnectorVersion): boolean {
+/** Processor versions carry exactly ONE artifact — presence of its signature
+ * reference is the whole signature story. Defensive, never a crash: a missing
+ * or malformed artifact is unverified, never verified-by-omission. */
+export function hasProcessorSignaturePresent(version: ProcessorVersion): boolean {
+  return Boolean(version.artifact?.signature?.bundleURL);
+}
+
+/** True iff SLSA provenance is present for this processor version — either the
+ * version-level attestation or the artifact-level one (the schema allows either
+ * shape, mirroring connectors). */
+export function hasProcessorProvenancePresent(version: ProcessorVersion): boolean {
+  return Boolean(version.slsaProvenance?.bundleURL || version.artifact?.slsaProvenance?.bundleURL);
+}
+
+/** Structural on purpose: `isYanked` applies to connector AND processor versions
+ * identically (both carry an optional `yanked`). */
+export function isYanked(version: { yanked?: YankReason }): boolean {
   return Boolean(version.yanked);
 }
 
-export function isPublisherRevoked(connector: Connector): boolean {
-  return Boolean(connector.publisher.revoked);
+/** Structural on purpose: `isPublisherRevoked` applies to connector AND processor
+ * publishers identically (both carry the same optional `revoked`). */
+export function isPublisherRevoked(entry: { publisher: { revoked?: Revocation } }): boolean {
+  return Boolean(entry.publisher.revoked);
 }
 
 /**
@@ -94,4 +125,20 @@ export function deriveVerified(version: ConnectorVersion, connector: Connector):
   if (isPublisherRevoked(connector)) return false;
   if (isYanked(version)) return false;
   return hasSignaturePresent(version) && hasProvenancePresent(version);
+}
+
+/**
+ * The processor-version analogue of `deriveVerified`: same rules, applied to the
+ * single-artifact shape (signature reference present on the one artifact, SLSA
+ * provenance present at version or artifact level, not yanked, publisher not
+ * revoked). Kept as a separate function rather than folding processors into the
+ * connector one — the two version shapes differ (`artifacts[]` vs one `artifact`),
+ * and "verified" is exactly the kind of derived fact that must stay explicit
+ * (WS4 plan §1, amended AC 4.9: processors rendered with the same honesty
+ * properties as connectors).
+ */
+export function deriveProcessorVerified(version: ProcessorVersion, processor: Processor): boolean {
+  if (isPublisherRevoked(processor)) return false;
+  if (isYanked(version)) return false;
+  return hasProcessorSignaturePresent(version) && hasProcessorProvenancePresent(version);
 }

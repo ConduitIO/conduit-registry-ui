@@ -5,65 +5,66 @@ import SignatureNote, { SIGNATURE_NOTE_ID } from '../../components/SignatureNote
 import { EffectiveStatusTag } from '../../components/EffectiveStatusTag';
 import { RevocationBanner } from '../../components/RevocationBanner';
 import { CopyInstallButton } from '../../components/CopyInstallButton';
-import { CompatCell } from '../../components/CompatCell';
 import DeclaredMinimaNote from '../../components/DeclaredMinimaNote.astro';
 import { loadRenderModel } from '../../lib/loadRenderModel';
 import { sortVersionsDescending } from '../../lib/semver';
 
 export function getStaticPaths() {
   const model = loadRenderModel();
-  return model.connectors.map((c) => ({ params: { name: c.name }, props: { connector: c } }));
+  return model.processors.map((p) => ({ params: { name: p.name }, props: { processor: p } }));
 }
 
-const { connector } = Astro.props;
-const versionsNewestFirst = sortVersionsDescending(connector.versions, (v) => v.version);
+const { processor } = Astro.props;
+const versionsNewestFirst = sortVersionsDescending(processor.versions, (v) => v.version);
 const defaultVersion = versionsNewestFirst.find((v) => v.isDefault) ?? versionsNewestFirst[0];
-const installCommand = `conduit connectors install ${connector.name}`;
+// The CLI's own install verb for standalone processors (cmd/conduit/root/
+// processorplugins), mirroring the connector install command.
+const installCommand = `conduit processor-plugins install ${processor.name}`;
 ---
 
 <BaseLayout
-  title={`${connector.displayName} — Conduit connector registry`}
-  description={connector.description}
+  title={`${processor.displayName} — Conduit processor registry`}
+  description={processor.description}
 >
   <header>
     <h1>
-      {connector.displayName}
-      <code>{connector.name}</code>
+      {processor.displayName}
+      <code>{processor.name}</code>
     </h1>
     <p>
       <VerifiedBadge
         verified={defaultVersion ? defaultVersion.verified : false}
         descriptionId={SIGNATURE_NOTE_ID}
       />
-      <EffectiveStatusTag status={connector.effectiveStatus} />
+      <EffectiveStatusTag status={processor.effectiveStatus} />
     </p>
     <SignatureNote />
     {
-      connector.repository && (
+      processor.repository && (
         <p>
-          <a href={connector.repository} target="_blank" rel="noopener noreferrer">
+          <a href={processor.repository} target="_blank" rel="noopener noreferrer">
             Source repository
           </a>
         </p>
       )
     }
-    <p>{connector.description}</p>
+    <p>{processor.description}</p>
   </header>
 
   {
-    connector.effectiveStatus === 'revoked' && connector.revoked && (
-      <RevocationBanner severity="revoked" reason={connector.revoked.reason} />
+    processor.effectiveStatus === 'revoked' && processor.revoked && (
+      <RevocationBanner severity="revoked" reason={processor.revoked.reason} />
     )
   }
   {
-    connector.effectiveStatus === 'yanked' && !connector.revoked && (
+    processor.effectiveStatus === 'yanked' && !processor.revoked && (
       <RevocationBanner
         severity="yanked"
         reason={
           versionsNewestFirst
             .map((v) => v.yanked?.reason)
             .filter((r): r is string => Boolean(r))
-            .join(' ') || 'All published versions of this connector have been yanked.'
+            .join(' ') || 'All published versions of this processor have been yanked.'
         }
       />
     )
@@ -72,9 +73,9 @@ const installCommand = `conduit connectors install ${connector.name}`;
   <section aria-labelledby="install-heading">
     <h2 id="install-heading">Install</h2>
     {
-      connector.suppressInstallCommand ? (
+      processor.suppressInstallCommand ? (
         <p>
-          Install is disabled for this connector — see the notice above. Do not attempt to install
+          Install is disabled for this processor — see the notice above. Do not attempt to install
           it manually until the status changes.
         </p>
       ) : (
@@ -88,7 +89,7 @@ const installCommand = `conduit connectors install ${connector.name}`;
     <DeclaredMinimaNote />
     <table>
       <caption class="visually-hidden"
-        >Published versions of {connector.displayName}, newest first</caption
+        >Published versions of {processor.displayName}, newest first</caption
       >
       <thead>
         <tr>
@@ -134,60 +135,9 @@ const installCommand = `conduit connectors install ${connector.name}`;
         }
       </tbody>
     </table>
-  </section>
-
-  {
-    defaultVersion && (
-      <section aria-labelledby="compat-heading">
-        <h2 id="compat-heading">Platform compatibility — {defaultVersion.version}</h2>
-        <table>
-          <caption>
-            OS / architecture support for version {defaultVersion.version}. Every cell is either
-            "Available" or "Not available" — never blank.
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col">OS \ Arch</th>
-              {Array.from(new Set(defaultVersion.compat.map((c) => c.arch))).map((arch) => (
-                <th scope="col">{arch}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {Array.from(new Set(defaultVersion.compat.map((c) => c.os))).map((os) => (
-              <tr>
-                <th scope="row">{os}</th>
-                {defaultVersion.compat
-                  .filter((c) => c.os === os)
-                  .map((c) => (
-                    <CompatCell
-                      os={c.os}
-                      arch={c.arch}
-                      available={c.available}
-                      {...(connector.repository
-                        ? { requestUrl: `${connector.repository}/issues` }
-                        : {})}
-                    />
-                  ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-    )
-  }
-
-  <section aria-labelledby="stats-heading">
-    <h2 id="stats-heading">Downloads</h2>
-    {
-      connector.stats && !connector.stats.unavailable ? (
-        <p>
-          {connector.stats.totalDownloads?.toLocaleString()} total downloads, as of{' '}
-          {new Date(connector.stats.asOf).toISOString().slice(0, 10)}.
-        </p>
-      ) : (
-        <p>Download stats unavailable.</p>
-      )
-    }
+    <p>
+      Distributed as a single arch-neutral WASM build (<code>wasip1/wasm</code>) — one artifact runs
+      on every platform, so there is no per-OS/per-arch matrix.
+    </p>
   </section>
 </BaseLayout>

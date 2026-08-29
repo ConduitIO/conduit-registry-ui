@@ -32,7 +32,8 @@ func TestGenerateSignedFixture(t *testing.T) {
 	}
 
 	// Load the committed template and keep only its payload, the source of
-	// the site's render-model data (schemaVersion 1, 2 connectors).
+	// the site's render-model data (schemaVersion 1, 2 connectors + 2
+	// processors since S5).
 	templatePath := filepath.Join("..", "..", "test", "fixtures", "sample-index.json")
 	templateRaw, err := os.ReadFile(templatePath)
 	if err != nil {

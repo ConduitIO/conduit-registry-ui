@@ -10,6 +10,7 @@ export const RESERVED_ROUTE_SEGMENTS: ReadonlySet<string> = new Set([
   '404',
   'page',
   'connectors',
+  'processors',
   'index.json',
   'search-manifest.json',
 ]);

@@ -110,3 +110,93 @@ describe('buildRenderModel — search manifest carries only presentation fields'
     }
   });
 });
+
+describe('buildRenderModel — processors (WS4 amended AC 4.9: rendered with the same honesty properties as connectors)', () => {
+  it('derives every processor with the same fields connectors get (badge, status, install suppression, default version)', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload);
+
+    expect(model.processors).toHaveLength(2);
+    const chunk = model.processors.find((p) => p.name === 'ai.chunk')!;
+    expect(chunk.displayName).toBe('Conduit AI Chunking Processor');
+    expect(chunk.description.length).toBeGreaterThan(0);
+    expect(chunk.repository).toBe('https://github.com/ConduitIO/conduit-processor-ai');
+    expect(chunk.effectiveStatus).toBe('active');
+    expect(chunk.allVersionsYanked).toBe(false);
+    expect(chunk.suppressInstallCommand).toBe(false);
+    expect(chunk.defaultVersion).toBe('0.1.0');
+
+    const v = chunk.versions[0]!;
+    expect(v.version).toBe('0.1.0');
+    expect(v.minConduitVersion).toBe('0.20.0');
+    expect(v.minProtocolVersion).toBe('0.14.0');
+    expect(v.deprecated).toBe(false);
+    expect(v.isDefault).toBe(true);
+  });
+
+  it('marks the default version verified only when signature AND provenance references are present (same two-layer rule as connectors)', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload);
+    const chunk = model.processors.find((p) => p.name === 'ai.chunk')!;
+    // The sample fixture's ai.chunk carries artifact.signature + version-level
+    // slsaProvenance, mirroring the live index — so it is verified.
+    expect(chunk.versions[0]!.verified).toBe(true);
+
+    // Strip the signature reference: the badge must flip, never be derived
+    // from presence-by-omission.
+    const stripped = payload.processors![0]!.versions[0]!.artifact as { signature?: unknown };
+    stripped.signature = undefined;
+    const degraded = buildRenderModel(payload);
+    expect(degraded.processors[0]!.versions[0]!.verified).toBe(false);
+  });
+
+  it('suppresses install and flags the status when every processor version is yanked', () => {
+    const { payload } = loadSampleIndex();
+    const processor = payload.processors![0]!;
+    processor.versions = [
+      { ...processor.versions[0]!, version: '1.0.0', yanked: { reason: 'bad build' } },
+      { ...processor.versions[0]!, version: '0.9.0', yanked: { reason: 'worse build' } },
+    ];
+    const model = buildRenderModel(payload);
+    const rendered = model.processors.find((p) => p.name === processor.name)!;
+    expect(rendered.effectiveStatus).toBe('yanked');
+    expect(rendered.allVersionsYanked).toBe(true);
+    expect(rendered.suppressInstallCommand).toBe(true);
+  });
+
+  it('suppresses install for a revoked processor publisher (revoked overrides signed versions)', () => {
+    const { payload } = loadSampleIndex();
+    payload.processors![0]!.publisher.revoked = { reason: 'compromised identity' };
+    const model = buildRenderModel(payload);
+    const rendered = model.processors.find((p) => p.name === 'ai.chunk')!;
+    expect(rendered.effectiveStatus).toBe('revoked');
+    expect(rendered.suppressInstallCommand).toBe(true);
+    expect(rendered.revoked?.reason).toBe('compromised identity');
+  });
+
+  it('fails the whole build loudly if a processor name collides with a reserved route segment', () => {
+    const { payload } = loadSampleIndex();
+    payload.processors![0]!.name = '404';
+    try {
+      buildRenderModel(payload);
+      expect.fail('expected buildRenderModel to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(BuildError);
+      expect((err as BuildError).code).toBe('ERR_RESERVED_ROUTE_COLLISION');
+    }
+  });
+
+  it('fails on a duplicate processor name, same as connectors', () => {
+    const { payload } = loadSampleIndex();
+    const dup = structuredClone(payload.processors![0]!);
+    payload.processors!.push(dup);
+    expect(() => buildRenderModel(payload)).toThrow(BuildError);
+  });
+
+  it('renders an empty processor list for an index without a processors key (optional in schemaVersion 1)', () => {
+    const { payload } = loadSampleIndex();
+    delete (payload as { processors?: unknown }).processors;
+    const model = buildRenderModel(payload);
+    expect(model.processors).toEqual([]);
+  });
+});

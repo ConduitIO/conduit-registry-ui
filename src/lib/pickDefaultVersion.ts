@@ -1,6 +1,16 @@
-import type { Connector, ConnectorVersion } from './schema';
+import type { YankReason } from './schema';
 import { isYanked } from './deriveVerified';
 import { sortVersionsDescending } from './semver';
+
+/**
+ * Structural on purpose: connector and processor versions share the fields this
+ * picks by (`version`, `yanked`) — one core serves both (WS4 plan §1, amended
+ * AC 4.9: processors mirror connectors' derived fields).
+ */
+export interface DefaultVersionCandidate {
+  version: string;
+  yanked?: YankReason;
+}
 
 /**
  * Picks the version shown by default: the compat-matrix default and the
@@ -15,11 +25,13 @@ import { sortVersionsDescending } from './semver';
  * returning undefined, per step6-web-ui.md §10's explicit test case ("falls back
  * to showing the newest anyway ... rather than picking nothing").
  */
-export function pickDefaultVersion(connector: Connector): ConnectorVersion | undefined {
-  if (connector.versions.length === 0) return undefined;
+export function pickDefaultVersion<T extends DefaultVersionCandidate>(entry: {
+  versions: T[];
+}): T | undefined {
+  if (entry.versions.length === 0) return undefined;
 
-  const nonYanked = connector.versions.filter((v) => !isYanked(v));
-  const pool = nonYanked.length > 0 ? nonYanked : connector.versions;
+  const nonYanked = entry.versions.filter((v) => !isYanked(v));
+  const pool = nonYanked.length > 0 ? nonYanked : entry.versions;
 
   const sorted = sortVersionsDescending(pool, (v) => v.version);
   return sorted[0];

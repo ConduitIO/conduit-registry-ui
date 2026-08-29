@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deriveProcessorVerified,
   deriveVerified,
+  hasProcessorProvenancePresent,
+  hasProcessorSignaturePresent,
   hasSignaturePresent,
   hasProvenancePresent,
 } from '../src/lib/deriveVerified';
 import { VERIFIED_FIXTURE_CASES } from './fixtures/verifiedFixtures';
 import { loadSampleIndex } from './fixtures/loadFixture';
-import type { ConnectorVersion } from '../src/lib/schema';
+import type { ConnectorVersion, Processor, ProcessorVersion } from '../src/lib/schema';
 
 describe('deriveVerified — the shared fixture set (step6-web-ui.md §4/§10)', () => {
   for (const c of VERIFIED_FIXTURE_CASES) {
@@ -75,5 +78,109 @@ describe('deriveVerified — against the real frozen sample index', () => {
     expect(hasSignaturePresent(v030)).toBe(true);
     expect(hasProvenancePresent(v030)).toBe(true);
     expect(deriveVerified(v030, revokedConnector)).toBe(false);
+  });
+});
+
+describe('deriveProcessorVerified — processors render with the same two-layer trust rule (WS4 amended AC 4.9)', () => {
+  function processorVersion(overrides: Partial<ProcessorVersion> = {}): ProcessorVersion {
+    return {
+      version: '0.1.0',
+      minConduitVersion: '0.20.0',
+      minProtocolVersion: '0.14.0',
+      artifact: {
+        os: 'wasip1',
+        arch: 'wasm',
+        kind: 'wasm-processor',
+        url: 'https://example.test/processor.wasm.tar.gz',
+        sha256: 'a'.repeat(64),
+        size: 1,
+        signature: { bundleURL: 'https://example.test/processor.wasm.sig' },
+      },
+      slsaProvenance: {
+        bundleURL: 'https://example.test/processor.intoto.jsonl',
+        predicateType: 'https://slsa.dev/provenance/v0.2',
+      },
+      ...overrides,
+    };
+  }
+
+  const publisher = {
+    expectedOIDCIssuer: 'https://token.actions.githubusercontent.com',
+    expectedIdentityPattern:
+      '^https://github\\.com/x/y/\\.github/workflows/publish\\.yml@refs/tags/v.*$',
+  };
+
+  it('verified: signature reference + provenance reference present, not yanked, publisher not revoked', () => {
+    const processor: Processor = { name: 'ai.chunk', publisher, versions: [processorVersion()] };
+    const version = processor.versions[0]!;
+    expect(hasProcessorSignaturePresent(version)).toBe(true);
+    expect(hasProcessorProvenancePresent(version)).toBe(true);
+    expect(deriveProcessorVerified(version, processor)).toBe(true);
+  });
+
+  it('artifact-level provenance alone (no version-level) still verifies — the schema allows either shape', () => {
+    const version = processorVersion();
+    delete version.slsaProvenance;
+    version.artifact.slsaProvenance = {
+      bundleURL: 'https://example.test/processor.intoto.jsonl',
+      predicateType: 'https://slsa.dev/provenance/v0.2',
+    };
+    expect(hasProcessorProvenancePresent(version)).toBe(true);
+  });
+
+  it('NOT verified when the single artifact lacks a signature reference — never verified-by-omission', () => {
+    const version = processorVersion();
+    (version.artifact as { signature?: unknown }).signature = undefined;
+    expect(hasProcessorSignaturePresent(version)).toBe(false);
+    expect(
+      deriveProcessorVerified(version, {
+        name: 'ai.chunk',
+        publisher,
+        versions: [version],
+      })
+    ).toBe(false);
+  });
+
+  it('NOT verified when provenance is absent entirely', () => {
+    const version = processorVersion();
+    delete version.slsaProvenance;
+    expect(hasProcessorProvenancePresent(version)).toBe(false);
+  });
+
+  it('NOT verified when yanked, even with signature+provenance present (same rule as connectors)', () => {
+    const version = processorVersion({ yanked: { reason: 'bad build' } });
+    expect(
+      deriveProcessorVerified(version, { name: 'ai.chunk', publisher, versions: [version] })
+    ).toBe(false);
+  });
+
+  it('NOT verified when the publisher is revoked — revoked overrides even a well-signed version', () => {
+    const version = processorVersion();
+    const revoked: Processor = {
+      name: 'ai.chunk',
+      publisher: { ...publisher, revoked: { reason: 'compromised' } },
+      versions: [version],
+    };
+    expect(deriveProcessorVerified(version, revoked)).toBe(false);
+  });
+
+  it('defensively treats a missing artifact as unverified, not as a crash', () => {
+    const malformed = {
+      version: '0.1.0',
+      minConduitVersion: '0.20.0',
+      minProtocolVersion: '0.14.0',
+    } as unknown as ProcessorVersion;
+    expect(hasProcessorSignaturePresent(malformed)).toBe(false);
+    expect(hasProcessorProvenancePresent(malformed)).toBe(false);
+  });
+
+  it('against the real frozen sample index: ai.chunk 0.1.0 mirrors the live shape and is verified', () => {
+    const { payload } = loadSampleIndex();
+    const chunk = payload.processors!.find((p) => p.name === 'ai.chunk')!;
+    const v010 = chunk.versions.find((v) => v.version === '0.1.0')!;
+    expect(v010.artifact.os).toBe('wasip1');
+    expect(v010.artifact.arch).toBe('wasm');
+    expect(v010.artifact.kind).toBe('wasm-processor');
+    expect(deriveProcessorVerified(v010, chunk)).toBe(true);
   });
 });
