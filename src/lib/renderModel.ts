@@ -7,10 +7,21 @@ import type {
   YankReason,
 } from './schema';
 import { ALL_ARCH, ALL_OS } from './schema';
-import { effectiveConnectorStatus, type EffectiveStatus } from './effectiveStatus';
+import {
+  effectiveConnectorStatus,
+  effectiveProcessorStatus,
+  type EffectiveStatus,
+} from './effectiveStatus';
 import { pickDefaultVersion } from './pickDefaultVersion';
 import { isReservedRouteSegment } from './reserved';
-import { verdictForVersion, type ArtifactReport, type ArtifactVerdict } from './verdicts';
+import {
+  mergeVerdicts,
+  verdictForProcessorVersion,
+  verdictForVersion,
+  type ArtifactReport,
+  type ArtifactVerdict,
+  type VerdictLookup,
+} from './verdicts';
 import { BuildError } from './errors';
 
 export interface CompatCellModel {
@@ -63,6 +74,43 @@ export interface RenderedConnector {
   stats?: ConnectorStats;
 }
 
+/** The processor analogue of `RenderedVersion`. No `compat` matrix: a processor
+ * ships a single arch-neutral (wasip1/wasm) artifact that runs on every
+ * platform, so the per-(os,arch) matrix a connector needs has nothing to
+ * express here (schema def `processorArtifact` — os/arch/kind are constants).
+ * Verdict semantics are identical to connectors (WS4 S5 + S3): the same
+ * artifacts pass verifies the processor's single artifact and its provenance,
+ * and the badge renders the same three states — never a presence pass. */
+export interface RenderedProcessorVersion {
+  version: string;
+  releasedAt?: string;
+  minConduitVersion: string;
+  minProtocolVersion: string;
+  deprecated: boolean;
+  yanked?: YankReason;
+  verdict: ArtifactVerdict;
+  verdictReason?: string;
+  /** The verifier CLI's wall clock at verdict time — the badge's as-of date. */
+  verdictCheckedAt?: string;
+  isDefault: boolean;
+}
+
+/** The processor analogue of `RenderedConnector`, mirroring its honesty
+ * properties: same effective-status semantics, same install-command
+ * suppression, same verified-badge derivation (WS4 plan §1, amended AC 4.9). */
+export interface RenderedProcessor {
+  name: string;
+  displayName: string;
+  description: string;
+  repository?: string;
+  effectiveStatus: EffectiveStatus;
+  revoked?: Revocation;
+  allVersionsYanked: boolean;
+  suppressInstallCommand: boolean;
+  defaultVersion?: string;
+  versions: RenderedProcessorVersion[];
+}
+
 export interface SearchManifestEntry {
   name: string;
   displayName: string;
@@ -87,6 +135,7 @@ export interface RenderModel {
    * 7-day window; the banner warns before that. */
   indexAgeMs: number;
   connectors: RenderedConnector[];
+  processors: RenderedProcessor[];
   searchManifest: SearchManifestEntry[];
 }
 
@@ -118,11 +167,38 @@ function buildCompatMatrix(
 }
 
 /**
+ * Guards a registry collection (connectors or processors) against names that
+ * would collide with a route this generator itself uses, or with each other.
+ * A collision fails the WHOLE build loudly rather than silently shadowing a
+ * page (§9 edge case, extended to processors in S5).
+ */
+function assertUniqueNames(entries: { name: string }[], kind: 'connector' | 'processor'): void {
+  const seenNames = new Set<string>();
+  for (const entry of entries) {
+    if (isReservedRouteSegment(entry.name)) {
+      throw new BuildError(
+        'ERR_RESERVED_ROUTE_COLLISION',
+        `${kind} name "${entry.name}" collides with a reserved site route segment — ` +
+          `refusing to generate (this would silently shadow a real page)`
+      );
+    }
+    if (seenNames.has(entry.name)) {
+      throw new BuildError(
+        'ERR_RESERVED_ROUTE_COLLISION',
+        `duplicate ${kind} name "${entry.name}" in index — index-CI is supposed to enforce ` +
+          `uniqueness; refusing to generate two pages at the same URL`
+      );
+    }
+    seenNames.add(entry.name);
+  }
+}
+
+/**
  * Transforms the verified payload into exactly what the Astro pages consume,
  * computing every derived field once, in one place (step6-web-ui.md §3 step 5).
- * Also enforces the reserved-route-segment check (§9 edge case) — a connector
- * name colliding with a route this generator itself uses fails the WHOLE build
- * loudly, rather than silently shadowing a route for one connector.
+ * Connectors AND processors are derived here, with the same honesty properties
+ * (verified badge, effective status, install-command suppression — WS4 plan §1,
+ * amended ACs 4.5/4.9).
  */
 export function buildRenderModel(
   payload: IndexPayload,
@@ -130,24 +206,13 @@ export function buildRenderModel(
 ): RenderModel {
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
   const indexAgeMs = Math.max(0, Date.parse(generatedAt) - Date.parse(payload.index.timestamp));
-  const seenNames = new Set<string>();
-  const connectors: RenderedConnector[] = payload.connectors.map((connector) => {
-    if (isReservedRouteSegment(connector.name)) {
-      throw new BuildError(
-        'ERR_RESERVED_ROUTE_COLLISION',
-        `connector name "${connector.name}" collides with a reserved site route segment — ` +
-          `refusing to generate (this would silently shadow a real page)`
-      );
-    }
-    if (seenNames.has(connector.name)) {
-      throw new BuildError(
-        'ERR_RESERVED_ROUTE_COLLISION',
-        `duplicate connector name "${connector.name}" in index — index-CI is supposed to enforce ` +
-          `uniqueness; refusing to generate two pages at the same URL`
-      );
-    }
-    seenNames.add(connector.name);
+  // The verdict lookups are built ONCE per merge — the loop below reads them
+  // for every version of every entry (never rebuilt per version).
+  const verdicts = opts.artifacts !== undefined ? mergeVerdicts(opts.artifacts, payload) : undefined;
+  assertUniqueNames(payload.connectors, 'connector');
+  assertUniqueNames(payload.processors ?? [], 'processor');
 
+  const connectors: RenderedConnector[] = payload.connectors.map((connector) => {
     const effectiveStatus = effectiveConnectorStatus(connector);
     const allVersionsYanked = effectiveStatus === 'yanked';
     const suppressInstallCommand = effectiveStatus === 'revoked' || allVersionsYanked;
@@ -156,8 +221,7 @@ export function buildRenderModel(
     const revoked = connector.publisher.revoked !== undefined;
     const versions: RenderedVersion[] = connector.versions.map((v) => {
       const verdict = verdictForVersion(
-        opts.artifacts,
-        payload,
+        verdicts?.connectors,
         connector.name,
         revoked,
         v.version
@@ -193,6 +257,50 @@ export function buildRenderModel(
     };
   });
 
+  const processors: RenderedProcessor[] = (payload.processors ?? []).map((processor) => {
+    const effectiveStatus = effectiveProcessorStatus(processor);
+    const allVersionsYanked = effectiveStatus === 'yanked';
+    const suppressInstallCommand = effectiveStatus === 'revoked' || allVersionsYanked;
+    const defaultVersion = pickDefaultVersion(processor);
+
+    const revoked = processor.publisher.revoked !== undefined;
+    const versions: RenderedProcessorVersion[] = processor.versions.map((v) => {
+      const verdict = verdictForProcessorVersion(
+        verdicts?.processors,
+        processor.name,
+        revoked,
+        v.version
+      );
+      return {
+        version: v.version,
+        ...(v.releasedAt !== undefined ? { releasedAt: v.releasedAt } : {}),
+        minConduitVersion: v.minConduitVersion,
+        minProtocolVersion: v.minProtocolVersion,
+        deprecated: Boolean(v.deprecated),
+        ...(v.yanked !== undefined ? { yanked: v.yanked } : {}),
+        verdict: verdict.verdict,
+        ...(verdict.reason !== undefined ? { verdictReason: verdict.reason } : {}),
+        ...(verdict.checkedAt !== undefined ? { verdictCheckedAt: verdict.checkedAt } : {}),
+        isDefault: defaultVersion?.version === v.version,
+      };
+    });
+
+    return {
+      name: processor.name,
+      displayName: processor.displayName ?? processor.name,
+      description: processor.description ?? '',
+      ...(processor.repository !== undefined ? { repository: processor.repository } : {}),
+      effectiveStatus,
+      ...(processor.publisher.revoked !== undefined
+        ? { revoked: processor.publisher.revoked }
+        : {}),
+      allVersionsYanked,
+      suppressInstallCommand,
+      ...(defaultVersion !== undefined ? { defaultVersion: defaultVersion.version } : {}),
+      versions,
+    };
+  });
+
   const searchManifest: SearchManifestEntry[] = connectors.map((c) => ({
     name: c.name,
     displayName: c.displayName,
@@ -209,6 +317,7 @@ export function buildRenderModel(
     ...(opts.artifacts !== undefined ? { verifierVersion: opts.artifacts.verifierVersion } : {}),
     indexAgeMs,
     connectors,
+    processors,
     searchManifest,
   };
 }

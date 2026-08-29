@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { effectiveConnectorStatus } from '../src/lib/effectiveStatus';
+import { effectiveConnectorStatus, effectiveProcessorStatus } from '../src/lib/effectiveStatus';
 import { loadSampleIndex } from './fixtures/loadFixture';
-import type { Connector } from '../src/lib/schema';
+import type { Connector, Processor } from '../src/lib/schema';
 
 const publisher = {
   expectedOIDCIssuer: 'https://token.actions.githubusercontent.com',
@@ -87,5 +87,85 @@ describe('effectiveConnectorStatus', () => {
     const { payload } = loadSampleIndex();
     const revoked = payload.connectors.find((c) => c.name === 'example-vector-sink')!;
     expect(effectiveConnectorStatus(revoked)).toBe('revoked');
+  });
+});
+
+describe('effectiveProcessorStatus — processors get the same status semantics as connectors (WS4 amended AC 4.9)', () => {
+  const publisher = {
+    expectedOIDCIssuer: 'https://token.actions.githubusercontent.com',
+    expectedIdentityPattern:
+      '^https://github\\.com/x/y/\\.github/workflows/publish\\.yml@refs/tags/v.*$',
+  };
+
+  function processorVersion(overrides: Partial<Processor['versions'][number]> = {}) {
+    return {
+      version: '0.1.0',
+      minConduitVersion: '0.20.0',
+      minProtocolVersion: '0.14.0',
+      artifact: {
+        os: 'wasip1' as const,
+        arch: 'wasm' as const,
+        kind: 'wasm-processor' as const,
+        url: 'https://example.test/p.wasm.tar.gz',
+        sha256: 'a'.repeat(64),
+        size: 1,
+        signature: { bundleURL: 'https://example.test/p.sig' },
+      },
+      ...overrides,
+    };
+  }
+
+  it('active: no yanked/deprecated/revoked at all', () => {
+    const p: Processor = { name: 'ai.chunk', publisher, versions: [processorVersion()] };
+    expect(effectiveProcessorStatus(p)).toBe('active');
+  });
+
+  it('deprecated: default (newest non-yanked) version is deprecated', () => {
+    const p: Processor = {
+      name: 'ai.chunk',
+      publisher,
+      versions: [processorVersion({ deprecated: true })],
+    };
+    expect(effectiveProcessorStatus(p)).toBe('deprecated');
+  });
+
+  it('revoked: publisher.revoked set, overrides everything else', () => {
+    const p: Processor = {
+      name: 'ai.chunk',
+      publisher: { ...publisher, revoked: { reason: 'compromised' } },
+      versions: [processorVersion({ deprecated: true })],
+    };
+    expect(effectiveProcessorStatus(p)).toBe('revoked');
+  });
+
+  it('yanked: every published version carries yanked', () => {
+    const p: Processor = {
+      name: 'ai.chunk',
+      publisher,
+      versions: [
+        processorVersion({ version: '0.2.0', yanked: { reason: 'bad' } }),
+        processorVersion({ version: '0.1.0', yanked: { reason: 'also bad' } }),
+      ],
+    };
+    expect(effectiveProcessorStatus(p)).toBe('yanked');
+  });
+
+  it('SOME (not all) versions yanked -> processor stays active at the top level', () => {
+    const p: Processor = {
+      name: 'ai.chunk',
+      publisher,
+      versions: [
+        processorVersion({ version: '0.2.0' }),
+        processorVersion({ version: '0.1.0', yanked: { reason: 'bad' } }),
+      ],
+    };
+    expect(effectiveProcessorStatus(p)).toBe('active');
+  });
+
+  it('matches "active" for both sample-index processors', () => {
+    const { payload } = loadSampleIndex();
+    for (const processor of payload.processors ?? []) {
+      expect(effectiveProcessorStatus(processor)).toBe('active');
+    }
   });
 });

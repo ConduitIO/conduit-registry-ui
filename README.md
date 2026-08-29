@@ -2,8 +2,8 @@
 
 The public web UI for the Conduit connector registry — a static site generated at build time
 from the signed registry index. No backend, no client-side fetch-and-render of the catalog:
-every connector fact on every page traces back to a field in the index, rendered as real,
-crawlable HTML that's fully present with JavaScript disabled.
+every connector and processor fact on every page traces back to a field in the index, rendered
+as real, crawlable HTML that's fully present with JavaScript disabled.
 
 **This site is a convenience. The `conduit` CLI is the authority.** See "Trust model" below
 before reading anything on this site as a security claim.
@@ -61,12 +61,18 @@ Two distinct "verified" claims exist on this site. Say them separately:
   three-state verdict per version: **pass** (every signature and provenance verified and
   bound), **fail** with the reason (a check failed), or **not-attempted** with the reason (no
   provenance reference in the index, an unfetchable bundle, a malformed declaration — a
-  missing reference is never a pass). A revoked publisher's versions always render
-  not-attempted: a verifying signature under a revoked identity does not establish trust.
-  Verdicts are computed once, at build time, and frozen into the site; nothing on this site
-  re-verifies and no runtime code touches the network. The honest semantics live in
-  `src/lib/verdicts.ts`, the report is written to `verify/artifacts.json`, and the full
+  missing reference is never a pass). A revoked publisher's versions always render **fail**
+  with the revocation reason: a verifying signature under a revoked identity does not
+  establish trust — that is a trust failure, not an abstention, and the crypto row's as-of
+  date is kept. Verdicts are computed once, at build time, and frozen into the site; nothing
+  on this site re-verifies and no runtime code touches the network. The honest semantics live
+  in `src/lib/verdicts.ts`, the report is written to `verify/artifacts.json`, and the full
   record — what was verified, how, when, and what it does not mean — is the `/verify` page.
+- **Processors are covered by the same artifacts pass** (WS4 S5): a processor version's
+  single wasip1/wasm artifact goes through the identical bundle verification and binding
+  checks and renders the identical three-state badge — there is no two-tier honesty, no
+  presence-pass anywhere on this site. Version minima (`Min Conduit` / `Min protocol`) are
+  labeled on every page as publisher-declared — a floor, not a tested compatibility claim.
 
 The only verification that actually protects an install is your own CLI:
 
@@ -173,6 +179,10 @@ self-terminating (the rebuild it triggers finds the state unchanged and pushes n
   **binaries** themselves (S3 fetches bundles only, bounded at 1 MiB). The bytes you actually
   install are verified at install time, by your CLI — the site's badges vouch for what the
   index declares, not for the file you download.
+- Processors render on the catalogue page and on `/processors/<name>/` pages but are not yet in
+  the search manifest (`search-manifest.json` covers connectors only) — a search for `ai.chunk`
+  finds nothing today. Adding processors to search is a small follow-up (S5 deliberately kept
+  the search surface unchanged).
 - Scarf stats fetch targets a placeholder endpoint shape; no token is provisioned, so the section
   is removed rather than shown as permanently "unavailable" (an empty shelf would imply a data
   source exists when none does).

@@ -182,7 +182,7 @@ describe('buildRenderModel — per-version verdicts (WS4 S3)', () => {
     }
   });
 
-  it('a revoked publisher renders every version not_attempted regardless of the crypto verdict', () => {
+  it('a revoked publisher renders every version fail with the revocation reason, keeping the crypto row’s checkedAt', () => {
     const { payload } = loadSampleIndex();
     const model = buildRenderModel(payload, {
       verified: true,
@@ -209,8 +209,23 @@ describe('buildRenderModel — per-version verdicts (WS4 S3)', () => {
     });
     const revoked = model.connectors.find((c) => c.name === 'example-vector-sink')!;
     const v = revoked.versions.find((x) => x.version === '0.3.0')!;
-    expect(v.verdict).toBe('not_attempted');
+    // A crypto-VERIFIED signature under a revoked identity is a trust failure
+    // (the reason says so) — the badge is fail, not an abstention, and stays
+    // dated with the crypto row's checkedAt.
+    expect(v.verdict).toBe('fail');
     expect(v.verdictReason).toMatch(/revoked/);
+    expect(v.verdictCheckedAt).toBe('2026-08-29T12:00:00Z');
+  });
+
+  it('a revoked publisher without a crypto row still renders fail, undated', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload, { verified: true });
+    const revoked = model.connectors.find((c) => c.name === 'example-vector-sink')!;
+    for (const v of revoked.versions) {
+      expect(v.verdict).toBe('fail');
+      expect(v.verdictReason).toMatch(/revoked/);
+      expect(v.verdictCheckedAt).toBeUndefined();
+    }
   });
 });
 
@@ -239,5 +254,117 @@ describe('buildRenderModel — index staleness data + verifier version', () => {
     const model = buildRenderModel(payload, { generatedAt: '2026-07-01T09:00:00Z' });
     expect(model.indexAgeMs).toBe(0);
     expect(model.verifierVersion).toBeUndefined();
+  });
+});
+
+describe('buildRenderModel — processors (WS4 S5: rendered with the same verdict honesty as connectors)', () => {
+  it('derives every processor with the same fields connectors get (badge, status, install suppression, default version)', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload);
+
+    expect(model.processors).toHaveLength(2);
+    const chunk = model.processors.find((p) => p.name === 'ai.chunk')!;
+    expect(chunk.displayName).toBe('Conduit AI Chunking Processor');
+    expect(chunk.description.length).toBeGreaterThan(0);
+    expect(chunk.repository).toBe('https://github.com/ConduitIO/conduit-processor-ai');
+    expect(chunk.effectiveStatus).toBe('active');
+    expect(chunk.allVersionsYanked).toBe(false);
+    expect(chunk.suppressInstallCommand).toBe(false);
+    expect(chunk.defaultVersion).toBe('0.1.0');
+
+    const v = chunk.versions[0]!;
+    expect(v.version).toBe('0.1.0');
+    expect(v.minConduitVersion).toBe('0.20.0');
+    expect(v.minProtocolVersion).toBe('0.14.0');
+    expect(v.deprecated).toBe(false);
+    expect(v.isDefault).toBe(true);
+  });
+
+  it('processor versions are not_attempted without a verdict row — presence earns no pass', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload);
+    const chunk = model.processors.find((p) => p.name === 'ai.chunk')!;
+    // The sample fixture's ai.chunk carries artifact.signature + version-level
+    // slsaProvenance — exactly the shape S3's honesty floor refuses to
+    // presence-pass: no crypto row, no green.
+    expect(payload.processors![0]!.versions[0]!.artifact.signature).toBeDefined();
+    expect(chunk.versions[0]!.verdict).toBe('not_attempted');
+    expect(chunk.versions[0]!.verdictReason).toMatch(/no verdict/);
+  });
+
+  it('renders a pass verdict for a processor version with a verified crypto row', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload, {
+      verified: true,
+      artifacts: {
+        schemaVersion: 1,
+        generatedAt: '2026-08-29T12:00:00Z',
+        indexVersion: 42,
+        indexTimestamp: '2026-07-14T09:00:00Z',
+        verifierVersion: 'v0.20.0-nightly',
+        connectors: [],
+        processors: [
+          {
+            name: 'ai.chunk',
+            versions: [
+              { version: '0.1.0', verdict: 'pass', checkedAt: '2026-08-29T12:00:00Z', artifacts: [] },
+            ],
+          },
+        ],
+      },
+    });
+    const chunk = model.processors.find((p) => p.name === 'ai.chunk')!;
+    expect(chunk.versions[0]!.verdict).toBe('pass');
+    expect(chunk.versions[0]!.verdictCheckedAt).toBe('2026-08-29T12:00:00Z');
+  });
+
+  it('suppresses install and flags the status when every processor version is yanked', () => {
+    const { payload } = loadSampleIndex();
+    const processor = payload.processors![0]!;
+    processor.versions = [
+      { ...processor.versions[0]!, version: '1.0.0', yanked: { reason: 'bad build' } },
+      { ...processor.versions[0]!, version: '0.9.0', yanked: { reason: 'worse build' } },
+    ];
+    const model = buildRenderModel(payload);
+    const rendered = model.processors.find((p) => p.name === processor.name)!;
+    expect(rendered.effectiveStatus).toBe('yanked');
+    expect(rendered.allVersionsYanked).toBe(true);
+    expect(rendered.suppressInstallCommand).toBe(true);
+  });
+
+  it('suppresses install for a revoked processor publisher (revoked overrides signed versions)', () => {
+    const { payload } = loadSampleIndex();
+    payload.processors![0]!.publisher.revoked = { reason: 'compromised identity' };
+    const model = buildRenderModel(payload);
+    const rendered = model.processors.find((p) => p.name === 'ai.chunk')!;
+    expect(rendered.effectiveStatus).toBe('revoked');
+    expect(rendered.suppressInstallCommand).toBe(true);
+    expect(rendered.revoked?.reason).toBe('compromised identity');
+  });
+
+  it('fails the whole build loudly if a processor name collides with a reserved route segment', () => {
+    const { payload } = loadSampleIndex();
+    payload.processors![0]!.name = '404';
+    try {
+      buildRenderModel(payload);
+      expect.fail('expected buildRenderModel to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(BuildError);
+      expect((err as BuildError).code).toBe('ERR_RESERVED_ROUTE_COLLISION');
+    }
+  });
+
+  it('fails on a duplicate processor name, same as connectors', () => {
+    const { payload } = loadSampleIndex();
+    const dup = structuredClone(payload.processors![0]!);
+    payload.processors!.push(dup);
+    expect(() => buildRenderModel(payload)).toThrow(BuildError);
+  });
+
+  it('renders an empty processor list for an index without a processors key (optional in schemaVersion 1)', () => {
+    const { payload } = loadSampleIndex();
+    delete (payload as { processors?: unknown }).processors;
+    const model = buildRenderModel(payload);
+    expect(model.processors).toEqual([]);
   });
 });

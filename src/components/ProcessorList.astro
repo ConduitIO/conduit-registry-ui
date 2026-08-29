@@ -1,0 +1,46 @@
+---
+import { EffectiveStatusTag } from './EffectiveStatusTag';
+import { VerifiedBadge } from './VerifiedBadge';
+import { SIGNATURE_NOTE_ID } from './SignatureNote.astro';
+import type { RenderedProcessor } from '../lib/renderModel';
+
+export interface Props {
+  processors: RenderedProcessor[];
+}
+
+const { processors } = Astro.props;
+const listId = 'processor-list';
+---
+
+<!-- Mirrors ConnectorList.astro's honesty elements (verified badge on the
+     default version, effective-status tag, description) for processors (WS4
+     plan §1, amended AC 4.9). Deliberately does NOT render SignatureNote —
+     that component's contract is EXACTLY ONE per page, and every page that
+     renders this list (today: the catalogue page) already renders it via
+     ConnectorList; the badges' aria-describedby points at that one instance.
+     No search/pagination: the live index ships two processors and the list
+     fits on the catalogue page. -->
+<ul id={listId} aria-label="Processors">
+  {
+    processors.map((p) => (
+      <li data-processor-name={p.name}>
+        <a href={`/processors/${p.name}/`}>
+          <strong>{p.displayName}</strong> <code>{p.name}</code>
+        </a>{' '}
+        {(() => {
+          const dv = p.versions.find((v) => v.isDefault);
+          return dv ? (
+            <VerifiedBadge
+              verdict={dv.verdict}
+              {...(dv.verdictReason !== undefined ? { reason: dv.verdictReason } : {})}
+              {...(dv.verdictCheckedAt !== undefined ? { checkedAt: dv.verdictCheckedAt } : {})}
+              descriptionId={SIGNATURE_NOTE_ID}
+            />
+          ) : null;
+        })()}
+        <EffectiveStatusTag status={p.effectiveStatus} />
+        <p title={p.description}>{p.description}</p>
+      </li>
+    ))
+  }
+</ul>
