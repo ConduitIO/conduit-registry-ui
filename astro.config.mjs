@@ -11,7 +11,7 @@ import react from '@astrojs/react';
 // directive in the pages that use them.
 export default defineConfig({
   output: 'static',
-  site: process.env.SITE_URL ?? 'https://registry.conduit.io',
+  site: process.env.SITE_URL ?? 'https://registry.conduitdata.io',
   integrations: [react()],
   build: {
     format: 'directory',

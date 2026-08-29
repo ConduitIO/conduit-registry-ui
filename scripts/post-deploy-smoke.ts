@@ -20,7 +20,7 @@ const webRoot = path.resolve(here, '..');
 async function main(): Promise<void> {
   const siteUrl = process.env['SITE_URL'];
   if (!siteUrl) {
-    throw new Error('SITE_URL env var is required (e.g. https://registry.conduit.io)');
+    throw new Error('SITE_URL env var is required (e.g. https://registry.conduitdata.io)');
   }
 
   const distIndexPath = path.join(webRoot, 'dist', 'index.json');
