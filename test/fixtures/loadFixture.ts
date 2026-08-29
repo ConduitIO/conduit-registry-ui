@@ -21,5 +21,8 @@ export function loadSampleIndexRaw(): string {
 
 /** The sample index's own timestamp — pass as `now` to verifyAndParseIndex in
  * tests so freshness checks are deterministic and don't depend on wall-clock
- * time drifting away from the fixture's fixed `index.timestamp`. */
+ * time drifting away from the fixture's fixed `index.timestamp`. This file is
+ * a TEMPLATE for the build: scripts/generate-fixture.ts stamps a fresh
+ * timestamp onto it at build time, so the build's default path never reads
+ * this frozen timestamp as-is (see scripts/build-site.ts). */
 export const SAMPLE_INDEX_TIMESTAMP = '2026-07-14T09:00:00Z';

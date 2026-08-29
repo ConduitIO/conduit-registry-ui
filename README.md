@@ -88,13 +88,17 @@ unconditionally, on every install, regardless of what any web page says. See
 ## Build pipeline (`npm run build`, `scripts/build-site.ts`)
 
 1. Read the signed index from disk (no network hop). **This repo no longer colocates `index/`**
-   (see "Relocation" above) — the default source is this repo's own frozen fixture,
-   `test/fixtures/sample-index.json`; set `REGISTRY_INDEX_PATH` to point at a real index file
-   instead. A real fetch-and-verify pipeline against the live index lands in S2.
+   (see "Relocation" above) — the default source is a fixture synthesized fresh at build time
+   (`scripts/generate-fixture.ts` stamps the current time onto the committed template
+   `test/fixtures/sample-index.json`, writing the gitignored `.generated/sample-index.json`),
+   so the fixture can never rot against the staleness gate; set `REGISTRY_INDEX_PATH` to point
+   at a real index file instead (read byte-for-byte, unmodified, facing the same real window).
+   A real fetch-and-verify pipeline against the live index lands in S2.
 2. Verify the index's own root signature — **currently stubbed** (see "Trust model"). Structural
    integrity (malformed envelope, schema-too-new) still hard-fails the build today.
-3. Freshness check against `REGISTRY_MAX_STALENESS_MS` (default 30 days; CI overrides this
-   further for the fixture — see `.github/workflows/ci.yml`'s header comment for why).
+3. Freshness check against `REGISTRY_MAX_STALENESS_MS` (default 30 days, no CI override). A
+   stale index — the frozen template passed via `REGISTRY_INDEX_PATH`, or any index older than
+   the window — fails the build with `ERR_INDEX_STALE`.
 4. Derive the render model (every computed fact — verified, effective status, default version,
    compat matrix — computed once, here).
 5. Fetch Scarf download stats, best-effort (never fails the build; no real data source is

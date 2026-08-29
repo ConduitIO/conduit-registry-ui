@@ -8,7 +8,9 @@
  *
  *   1. Obtain the signed index (read from disk — no network hop for the
  *      primary path). Relocated (WS4 S1) out of the monorepo that owns
- *      `index/`; see the INDEX_PATH comment below for what changed.
+ *      `index/`; the default source is a fixture synthesized fresh at build
+ *      time (scripts/generate-fixture.ts) so the real staleness window
+ *      applies — see the resolveIndexPath() comment below.
  *   2. Verify the index's own root signature (STUBBED — see src/lib/verifyIndex.ts).
  *   3. Freshness check.
  *   4. Derive the render model (every derived field computed once, here).
@@ -33,6 +35,7 @@ import { verifyAndParseIndex, DEFAULT_MAX_STALENESS_MS } from '../src/lib/verify
 import { buildRenderModel } from '../src/lib/renderModel';
 import { mergeScarfStats } from '../src/lib/scarfStats';
 import { fetchAllScarfStats } from './fetchScarfStats';
+import { writeGeneratedFixture } from './generate-fixture';
 import { BuildError } from '../src/lib/errors';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -45,15 +48,34 @@ const webRoot = path.resolve(here, '..');
 // bundled fixture is the only index this repo owns until S2 replaces this
 // whole read-from-disk step with a fetch-and-verify pipeline against the
 // live signed index (WS4 plan §5).
-const DEFAULT_INDEX_PATH = path.join(webRoot, 'test', 'fixtures', 'sample-index.json');
-const INDEX_PATH = process.env['REGISTRY_INDEX_PATH'] ?? DEFAULT_INDEX_PATH;
+//
+// Fixture freshness (WS4 S1): `test/fixtures/sample-index.json` is a committed
+// TEMPLATE with a frozen timestamp (deterministic for tests, which pass `now`
+// explicitly) — it must never be fed to the freshness gate as-is, because the
+// gate compares against the wall clock at the real REGISTRY_MAX_STALENESS_MS
+// window (default 30 days) and any fixed timestamp rots. The build therefore
+// synthesizes a fresh fixture via writeGeneratedFixture() (see
+// scripts/generate-fixture.ts) whenever REGISTRY_INDEX_PATH is unset; a real
+// index file supplied via REGISTRY_INDEX_PATH is read byte-for-byte, untouched,
+// and faces the same real window.
 const GENERATED_DIR = path.join(webRoot, '.generated');
 const RENDER_MODEL_PATH = path.join(GENERATED_DIR, 'render-model.json');
 const PUBLIC_DIR = path.join(webRoot, 'public');
 const SEARCH_MANIFEST_PATH = path.join(PUBLIC_DIR, 'search-manifest.json');
 const DIST_DIR = path.join(webRoot, 'dist');
 
+function resolveIndexPath(): string {
+  const explicit = process.env['REGISTRY_INDEX_PATH'];
+  if (explicit) return explicit;
+  // Default: synthesize a fresh fixture from the committed template — never
+  // read the frozen template itself (see the fixture-freshness note above).
+  const generated = writeGeneratedFixture();
+  console.log(`[registry-web] synthesized fresh fixture index at ${generated}`);
+  return generated;
+}
+
 async function main(): Promise<void> {
+  const INDEX_PATH = resolveIndexPath();
   console.log(`[registry-web] reading index from ${INDEX_PATH}`);
   if (!existsSync(INDEX_PATH)) {
     throw new BuildError('ERR_INDEX_UNREACHABLE', `index file not found at ${INDEX_PATH}`);
