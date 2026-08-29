@@ -20,11 +20,12 @@ import type { Connector, ConnectorVersion } from './schema';
  *   already encodes "passed pinned-identity verification" for the common case.
  *
  *   Layer 2 — Layer 1 only holds if the index this site is reading is *actually*
- *   the one index-CI produced. That's why the site independently verifies the
- *   index's own root signature before rendering anything (see verifyIndex.ts) — a
- *   compromised CDN/origin serving a tampered index without ever touching an
- *   artifact or signature would otherwise be a laundering vector, since the UI
- *   never downloads artifacts itself.
+ *   the one index-CI produced. That's why the site's build runs the conduit
+ *   CLI's own verifier against the index's root signature, rollback floor, and
+ *   staleness window before rendering anything (cmd/registry-verify, S2 PR-2 —
+ *   see src/lib/verifyViaCli.ts) — a compromised CDN/origin serving a tampered
+ *   index without ever touching an artifact or signature would otherwise be a
+ *   laundering vector, since the UI never downloads artifacts itself.
  *
  * Residual risk, stated plainly (CLAUDE.md's "say what was actually verified"):
  * this site does NOT independently re-run `cosign verify`/Rekor-inclusion checks

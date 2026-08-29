@@ -7,9 +7,12 @@
  * in sibling modules (`deriveVerified.ts`, `effectiveStatus.ts`, `pickDefaultVersion.ts`)
  * so the "what does the schema say" and "what do we conclude from it" concerns never
  * mix in one file.
+ *
+ * Schema-version gating is deliberately NOT here: since S2 PR-2 the
+ * authoritative gate is the Go verifier CLI's own check (ERR_SCHEMA_TOO_NEW,
+ * against the pinned conduit module), which runs before any of these types
+ * are ever populated from index bytes.
  */
-
-export const MAX_SUPPORTED_SCHEMA_VERSION = 1;
 
 export interface SignatureRef {
   bundleURL: string;

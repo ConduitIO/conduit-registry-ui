@@ -7,17 +7,18 @@ import styles from './VerifiedBadge.module.css';
  * already derived from the verified index payload.
  *
  * Label wording is deliberately narrow: `deriveVerified()` only confirms that
- * this version's entry in the signed index *references* a signature bundle and
+ * this version's entry in the verified index *references* a signature bundle and
  * an SLSA provenance bundle (plus isn't yanked/revoked) — nobody in this build
  * pipeline downloads the artifact or runs `cosign verify` against it (see
  * deriveVerified.ts's doc comment for the full two-layer trust argument and its
- * residual risk, and verifyIndex.ts for why the index's own root signature check
- * is currently stubbed). "Signature on file" says exactly that much and no more.
- * Real cryptographic verification of the actual bytes happens at install time
- * (`conduit connectors install`), not here — see SignatureNote.astro, which
- * every page rendering this badge must also render so that caveat is real,
- * visible page text next to the badge, not a tooltip (CLAUDE.md: "say what was
- * actually verified").
+ * residual risk). The INDEX this entry comes from is itself cryptographically
+ * verified at build time by the conduit CLI's verifier (cmd/registry-verify,
+ * --require-root) — see SignatureNote.astro — but "Signature on file" says
+ * exactly this-version-much and no more. Real cryptographic verification of the
+ * actual bytes happens at install time (`conduit connectors install`), not
+ * here — see SignatureNote.astro, which every page rendering this badge must
+ * also render so that caveat is real, visible page text next to the badge, not
+ * a tooltip (CLAUDE.md: "say what was actually verified").
  *
  * Deliberately NOT a red/failure badge for `verified={false}`: a connector
  * between registration and its first signed release looks different from one

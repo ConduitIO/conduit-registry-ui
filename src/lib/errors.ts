@@ -14,7 +14,12 @@ export type BuildErrorCode =
   | 'ERR_INDEX_ROLLBACK'
   | 'ERR_SCHEMA_TOO_NEW'
   | 'ERR_RESERVED_ROUTE_COLLISION'
-  | 'ERR_INDEX_MALFORMED';
+  | 'ERR_INDEX_MALFORMED'
+  // The verifier CLI's own codes (cmd/registry-verify), surfaced verbatim so
+  // the whole build speaks one error-code language. ERR_VERIFY is its
+  // catch-all for failures that carry no more specific code.
+  | 'ERR_VERIFY'
+  | 'ERR_TRUST_ANCHORS_UNAVAILABLE';
 
 export class BuildError extends Error {
   readonly code: BuildErrorCode;
