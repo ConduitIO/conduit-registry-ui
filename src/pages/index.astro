@@ -1,6 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import ConnectorList from '../components/ConnectorList.astro';
+import ProcessorList from '../components/ProcessorList.astro';
 import { loadRenderModel } from '../lib/loadRenderModel';
 import { paginate } from '../lib/pagination';
 
@@ -16,4 +17,11 @@ const pageConnectors = pages[0] ?? [];
     any of them with <code>conduit connectors install &lt;name&gt;</code>.
   </p>
   <ConnectorList pageConnectors={pageConnectors} page={1} totalPages={pages.length} />
+
+  <h2>Processors</h2>
+  <p>
+    {model.processors.length} processor{model.processors.length === 1 ? '' : 's'} in the registry. Install
+    any of them with <code>conduit processor-plugins install &lt;name&gt;</code>.
+  </p>
+  <ProcessorList processors={model.processors} />
 </BaseLayout>

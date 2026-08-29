@@ -137,6 +137,76 @@
           }
         ]
       }
+    ],
+    "processors": [
+      {
+        "name": "ai.chunk",
+        "displayName": "Conduit AI Chunking Processor",
+        "description": "Split a record's text into chunk records using a configurable strategy (standalone WASM).",
+        "repository": "https://github.com/ConduitIO/conduit-processor-ai",
+        "publisher": {
+          "expectedOIDCIssuer": "https://token.actions.githubusercontent.com",
+          "expectedIdentityPattern": "^https://github\\.com/ConduitIO/conduit-processor-ai/\\.github/workflows/publish\\.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "versions": [
+          {
+            "version": "0.1.0",
+            "releasedAt": "2026-07-01T00:13:09Z",
+            "minConduitVersion": "0.20.0",
+            "minProtocolVersion": "0.14.0",
+            "artifact": {
+              "os": "wasip1",
+              "arch": "wasm",
+              "kind": "wasm-processor",
+              "url": "https://github.com/ConduitIO/conduit-processor-ai/releases/download/v0.1.0/conduit-processor-ai-chunk_0.1.0_wasip1_wasm.tar.gz",
+              "sha256": "c7da3607342e8699314eb434595ea914d714e0d5752fe3e190640736924892b9",
+              "size": 3918565,
+              "signature": {
+                "bundleURL": "https://github.com/ConduitIO/conduit-processor-ai/releases/download/v0.1.0/conduit-processor-ai-chunk_0.1.0_wasip1_wasm.tar.gz.sigstore.json"
+              }
+            },
+            "slsaProvenance": {
+              "bundleURL": "https://github.com/ConduitIO/conduit-processor-ai/releases/download/v0.1.0/multiple.intoto.jsonl",
+              "predicateType": "https://slsa.dev/provenance/v0.2"
+            },
+            "deprecated": false
+          }
+        ]
+      },
+      {
+        "name": "ai.embed",
+        "displayName": "Conduit AI Embedding Processor",
+        "description": "Generate vector embeddings for records using a pluggable provider (standalone WASM).",
+        "repository": "https://github.com/ConduitIO/conduit-processor-ai",
+        "publisher": {
+          "expectedOIDCIssuer": "https://token.actions.githubusercontent.com",
+          "expectedIdentityPattern": "^https://github\\.com/ConduitIO/conduit-processor-ai/\\.github/workflows/publish\\.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "versions": [
+          {
+            "version": "0.1.0",
+            "releasedAt": "2026-07-01T00:13:09Z",
+            "minConduitVersion": "0.20.0",
+            "minProtocolVersion": "0.14.0",
+            "artifact": {
+              "os": "wasip1",
+              "arch": "wasm",
+              "kind": "wasm-processor",
+              "url": "https://github.com/ConduitIO/conduit-processor-ai/releases/download/v0.1.0/conduit-processor-ai-embed_0.1.0_wasip1_wasm.tar.gz",
+              "sha256": "885dcfd5cba7790cd1a8597e4a78fb018dbc05128c85063784a81c909aa2e84d",
+              "size": 4374820,
+              "signature": {
+                "bundleURL": "https://github.com/ConduitIO/conduit-processor-ai/releases/download/v0.1.0/conduit-processor-ai-embed_0.1.0_wasip1_wasm.tar.gz.sigstore.json"
+              }
+            },
+            "slsaProvenance": {
+              "bundleURL": "https://github.com/ConduitIO/conduit-processor-ai/releases/download/v0.1.0/multiple.intoto.jsonl",
+              "predicateType": "https://slsa.dev/provenance/v0.2"
+            },
+            "deprecated": false
+          }
+        ]
+      }
     ]
   },
   "signatures": [

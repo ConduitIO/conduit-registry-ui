@@ -2,8 +2,8 @@
 
 The public web UI for the Conduit connector registry — a static site generated at build time
 from the signed registry index. No backend, no client-side fetch-and-render of the catalog:
-every connector fact on every page traces back to a field in the index, rendered as real,
-crawlable HTML that's fully present with JavaScript disabled.
+every connector and processor fact on every page traces back to a field in the index, rendered
+as real, crawlable HTML that's fully present with JavaScript disabled.
 
 **This site is a convenience. The `conduit` CLI is the authority.** See "Trust model" below
 before reading anything on this site as a security claim.
@@ -64,6 +64,13 @@ that re-fetches every artifact, recomputes its checksum, and runs `cosign verify
 **That job does not exist yet.** Until it does, or until this repo performs the check itself,
 "Signature on file" means "the verified index says this version was signed," not "we checked
 the bytes."
+
+The same badge and the same trust argument cover the registry's processors (`ai.chunk`,
+`ai.embed`) — `conduit processor-plugins install` verifies the index envelope and per-artifact
+Sigstore/SLSA against the processor's pinned identity exactly like connectors do, and the
+processor pages' badges make exactly the same narrow presence-based claim. Version minima
+(`Min Conduit` / `Min protocol`) are labeled on every page as publisher-declared — a floor,
+not a tested compatibility claim.
 
 Remaining slices of this workstream:
 
@@ -158,6 +165,10 @@ self-terminating (the rebuild it triggers finds the state unchanged and pushes n
 
 ## Known, flagged gaps (not silently deferred)
 
+- Processors render on the catalogue page and on `/processors/<name>/` pages but are not yet in
+  the search manifest (`search-manifest.json` covers connectors only) — a search for `ai.chunk`
+  finds nothing today. Adding processors to search is a small follow-up (S5 deliberately kept
+  the search surface unchanged).
 - Per-artifact verification at build time does not exist (see "Trust model" — S3). The index's
   root signature IS verified at build time by the conduit CLI's verifier (S2), but the artifact
   bytes themselves are only verified at install time, by your CLI.

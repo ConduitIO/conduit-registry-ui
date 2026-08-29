@@ -245,5 +245,12 @@ describe('pipeline — verified payload through the render model', () => {
     const postgres = model.connectors.find((c) => c.name === 'postgres');
     expect(postgres).toBeDefined();
     expect(postgres!.displayName).toBe('PostgreSQL');
+
+    // S5: the same verified payload carries the two live-shaped processors
+    // (WS4 amended AC 4.9 — rendered, not stated-connectors-only).
+    expect(model.processors).toHaveLength(2);
+    const chunk = model.processors.find((p) => p.name === 'ai.chunk');
+    expect(chunk).toBeDefined();
+    expect(chunk!.defaultVersion).toBe('0.1.0');
   });
 });

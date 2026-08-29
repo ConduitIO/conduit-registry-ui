@@ -77,6 +77,51 @@ export interface Connector {
   versions: ConnectorVersion[];
 }
 
+/**
+ * One registered standalone-WASM-processor name. Mirrors `connector` but
+ * carries a SINGLE arch-neutral artifact per version (wasip1/wasm) instead of
+ * a per-(os,arch) `artifacts` array — a WASM processor builds once and runs
+ * everywhere (schema def `processor` / `processorArtifact`; the live index
+ * ships ai.chunk + ai.embed). Deliberately a SEPARATE collection from
+ * `connectors` in the schema, so the connector host-artifact selection stays
+ * untouched — mirrored here.
+ */
+export interface Processor {
+  name: string;
+  displayName?: string;
+  description?: string;
+  repository?: string;
+  publisher: Publisher;
+  versions: ProcessorVersion[];
+}
+
+export interface ProcessorVersion {
+  version: string;
+  releasedAt?: string;
+  minConduitVersion: string;
+  minProtocolVersion: string;
+  /** The single arch-neutral (wasip1/wasm) build — never an array (D1/D2 of
+   * the processor-artifacts design doc: a per-host list cannot even be
+   * expressed, which is the point of the separate collection). */
+  artifact: ProcessorArtifact;
+  /** Version-level SLSA provenance. Collapses with per-artifact provenance
+   * here (there is only one artifact); the schema allows either shape. */
+  slsaProvenance?: ProvenanceRef;
+  deprecated?: boolean;
+  yanked?: YankReason;
+}
+
+export interface ProcessorArtifact {
+  os: 'wasip1';
+  arch: 'wasm';
+  kind: 'wasm-processor';
+  url: string;
+  sha256: string;
+  size: number;
+  signature: SignatureRef;
+  slsaProvenance?: ProvenanceRef;
+}
+
 export interface IndexMeta {
   version: number;
   timestamp: string;
@@ -86,6 +131,10 @@ export interface IndexPayload {
   schemaVersion: number;
   index: IndexMeta;
   connectors: Connector[];
+  /** Optional in schemaVersion 1 — the frozen schema requires only
+   * `connectors`; an index without this key is valid and renders zero
+   * processors. */
+  processors?: Processor[];
 }
 
 export interface IndexSignature {

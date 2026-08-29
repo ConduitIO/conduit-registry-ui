@@ -1,0 +1,143 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { VerifiedBadge } from '../../components/VerifiedBadge';
+import SignatureNote, { SIGNATURE_NOTE_ID } from '../../components/SignatureNote.astro';
+import { EffectiveStatusTag } from '../../components/EffectiveStatusTag';
+import { RevocationBanner } from '../../components/RevocationBanner';
+import { CopyInstallButton } from '../../components/CopyInstallButton';
+import DeclaredMinimaNote from '../../components/DeclaredMinimaNote.astro';
+import { loadRenderModel } from '../../lib/loadRenderModel';
+import { sortVersionsDescending } from '../../lib/semver';
+
+export function getStaticPaths() {
+  const model = loadRenderModel();
+  return model.processors.map((p) => ({ params: { name: p.name }, props: { processor: p } }));
+}
+
+const { processor } = Astro.props;
+const versionsNewestFirst = sortVersionsDescending(processor.versions, (v) => v.version);
+const defaultVersion = versionsNewestFirst.find((v) => v.isDefault) ?? versionsNewestFirst[0];
+// The CLI's own install verb for standalone processors (cmd/conduit/root/
+// processorplugins), mirroring the connector install command.
+const installCommand = `conduit processor-plugins install ${processor.name}`;
+---
+
+<BaseLayout
+  title={`${processor.displayName} — Conduit processor registry`}
+  description={processor.description}
+>
+  <header>
+    <h1>
+      {processor.displayName}
+      <code>{processor.name}</code>
+    </h1>
+    <p>
+      <VerifiedBadge
+        verified={defaultVersion ? defaultVersion.verified : false}
+        descriptionId={SIGNATURE_NOTE_ID}
+      />
+      <EffectiveStatusTag status={processor.effectiveStatus} />
+    </p>
+    <SignatureNote />
+    {
+      processor.repository && (
+        <p>
+          <a href={processor.repository} target="_blank" rel="noopener noreferrer">
+            Source repository
+          </a>
+        </p>
+      )
+    }
+    <p>{processor.description}</p>
+  </header>
+
+  {
+    processor.effectiveStatus === 'revoked' && processor.revoked && (
+      <RevocationBanner severity="revoked" reason={processor.revoked.reason} />
+    )
+  }
+  {
+    processor.effectiveStatus === 'yanked' && !processor.revoked && (
+      <RevocationBanner
+        severity="yanked"
+        reason={
+          versionsNewestFirst
+            .map((v) => v.yanked?.reason)
+            .filter((r): r is string => Boolean(r))
+            .join(' ') || 'All published versions of this processor have been yanked.'
+        }
+      />
+    )
+  }
+
+  <section aria-labelledby="install-heading">
+    <h2 id="install-heading">Install</h2>
+    {
+      processor.suppressInstallCommand ? (
+        <p>
+          Install is disabled for this processor — see the notice above. Do not attempt to install
+          it manually until the status changes.
+        </p>
+      ) : (
+        <CopyInstallButton command={installCommand} client:load />
+      )
+    }
+  </section>
+
+  <section aria-labelledby="versions-heading">
+    <h2 id="versions-heading">Versions</h2>
+    <DeclaredMinimaNote />
+    <table>
+      <caption class="visually-hidden"
+        >Published versions of {processor.displayName}, newest first</caption
+      >
+      <thead>
+        <tr>
+          <th scope="col">Version</th>
+          <th scope="col">Released</th>
+          <th scope="col">Min Conduit</th>
+          <th scope="col">Min protocol</th>
+          <th scope="col">Status</th>
+          <th scope="col">Signature</th>
+        </tr>
+      </thead>
+      <tbody>
+        {
+          versionsNewestFirst.map((v) => (
+            <tr data-yanked={Boolean(v.yanked)}>
+              <th scope="row">
+                <code>{v.version}</code>
+              </th>
+              <td>{v.releasedAt ? new Date(v.releasedAt).toISOString().slice(0, 10) : '—'}</td>
+              <td>
+                <code>{v.minConduitVersion}</code>
+              </td>
+              <td>
+                <code>{v.minProtocolVersion}</code>
+              </td>
+              <td>
+                {v.yanked ? (
+                  <details>
+                    <summary>Yanked</summary>
+                    <p>{v.yanked.reason}</p>
+                  </details>
+                ) : v.deprecated ? (
+                  <EffectiveStatusTag status="deprecated" />
+                ) : (
+                  'Active'
+                )}
+              </td>
+              <td>
+                <VerifiedBadge verified={v.verified} descriptionId={SIGNATURE_NOTE_ID} />
+              </td>
+            </tr>
+          ))
+        }
+      </tbody>
+    </table>
+    <p>
+      Distributed as a single arch-neutral WASM build (<code>wasip1/wasm</code>) — one artifact runs
+      on every platform, so there is no per-OS/per-arch matrix.
+    </p>
+  </section>
+</BaseLayout>
