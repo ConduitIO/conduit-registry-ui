@@ -41,32 +41,38 @@ is a verbatim copy of that repo's token file (see `scripts/check-token-drift.ts`
 **This site is a convenience. The `conduit` CLI is the authority. If they disagree, believe the
 CLI.**
 
-Every "Verified" badge on this site today reflects exactly one fact: the signed registry index
-_references_ a signature and a SLSA provenance bundle for that version, the version isn't
-yanked, and its publisher isn't revoked (`src/lib/deriveVerified.ts`). **It does not mean this
-site has cryptographically checked that signature, that provenance, or the index's own root
-signature.** No component in this repo re-runs `cosign verify`, checks Sigstore/Rekor
-inclusion, or validates SLSA provenance against a pinned identity — `src/lib/verifyIndex.ts`'s
-root-signature check is an explicit, commented stub that validates envelope _shape_, never the
-signature itself.
+Two distinct "verified" claims exist on this site. Say them separately:
+
+- **The index is root-verified — REAL (S2).** The build runs the Go verifier CLI
+  (`cmd/registry-verify`, WS4 S2), which imports the conduit CLI's own verifier and compiled-in
+  trust anchors (`registry.DefaultTrustAnchors()` — no PEM is copied here, and this site can
+  never claim more than the CLI would accept). With `--require-root`, the CLI checks the index's
+  root signature, refuses a freshness-only acceptance outright, checks rollback against the
+  committed high-water state (`verify/state.json`), and enforces the CLI's own 7-day staleness
+  window. Any failure exits non-zero before `astro build` runs: **an index the conduit CLI
+  would refuse cannot reach this site.** The verdict (exit 0) flows into the render model as
+  `verified: true` (`src/lib/verifyViaCli.ts`).
+- **The per-version badge — "Signature on file"** reflects exactly one fact: that version's
+  entry in the verified index _references_ a signature and a SLSA provenance bundle, the
+  version isn't yanked, and its publisher isn't revoked (`src/lib/deriveVerified.ts`). **It does
+  not mean this site has cryptographically checked that version's artifact bytes.** No component
+  in this repo re-runs `cosign verify`, checks Sigstore/Rekor inclusion, or validates SLSA
+  provenance against a pinned identity.
 
 The badge's original justification assumed an "index-CI" job in `conduit-connector-registry`
 that re-fetches every artifact, recomputes its checksum, and runs `cosign verify` before merge.
 **That job does not exist yet.** Until it does, or until this repo performs the check itself,
-"Verified" here means "the signed index says this version was signed," not "we checked."
+"Signature on file" means "the verified index says this version was signed," not "we checked
+the bytes."
 
-Real, identity-pinned verification — importing the same verifier code and the same compiled-in
-trust anchors the `conduit` CLI uses (`registry.DefaultTrustAnchors()`), so this site can never
-claim more than the CLI would accept — is planned for later slices of this workstream:
+Remaining slices of this workstream:
 
-- **S2** — the site verifies the index's own root signature itself (reject on tamper, rollback,
-  or staleness beyond the CLI's own window), and the stub above is deleted.
 - **S3** — per-artifact Sigstore/SLSA verification against the pinned publisher identity, a
   three-state badge (pass / fail-with-reason / not-attempted — never a bare presence check), a
   `/verify` page, and on-page copy naming exactly what was and wasn't checked, as-of timestamp
   included.
 
-Until S2/S3 ship, the only verification that actually protects an install is your own CLI:
+The only verification that actually protects an install is your own CLI:
 
 ```sh
 conduit connectors install <name>
@@ -80,36 +86,57 @@ unconditionally, on every install, regardless of what any web page says. See
 
 ## What's not here yet
 
-- Wiring `cmd/registry-verify` — the Go verifier CLI (landed in S2 PR-1: imports conduit's
-  `index.Verify` + `DefaultTrustAnchors`, root-signature/fail-closed build gate, `--require-root`) —
-  into the build pipeline and deleting the TS stub — S2 PR-2.
-- Any change to the badge's derivation or to `deriveVerified.ts` — S2/S3.
+- Per-artifact Sigstore/SLSA verification at build time (three-state badge, `/verify` page) — S3.
 - A production deploy of this site, or any DNS/hosting change. `registry.conduitdata.io` stays
   with `conduit-connector-registry` until S6.
 
 ## Build pipeline (`npm run build`, `scripts/build-site.ts`)
 
-1. Read the signed index from disk (no network hop). **This repo no longer colocates `index/`**
-   (see "Relocation" above) — the default source is a fixture synthesized fresh at build time
-   (`scripts/generate-fixture.ts` stamps the current time onto the committed template
-   `test/fixtures/sample-index.json`, writing the gitignored `.generated/sample-index.json`),
-   so the fixture can never rot against the staleness gate; set `REGISTRY_INDEX_PATH` to point
-   at a real index file instead (read byte-for-byte, unmodified, facing the same real window).
-   A real fetch-and-verify pipeline against the live index lands in S2.
-2. Verify the index's own root signature — **currently stubbed** (see "Trust model"). Structural
-   integrity (malformed envelope, schema-too-new) still hard-fails the build today.
-3. Freshness check against `REGISTRY_MAX_STALENESS_MS` (default 30 days, no CI override). A
-   stale index — the frozen template passed via `REGISTRY_INDEX_PATH`, or any index older than
-   the window — fails the build with `ERR_INDEX_STALE`.
-4. Derive the render model (every computed fact — verified, effective status, default version,
+1. **Fetch + verify the live signed index with the Go verifier CLI** (`cmd/registry-verify`,
+   `--require-root`; the CLI's compiled-in default is `registry.DefaultIndexURL` —
+   `registry.conduitdata.io/index.json`). The CLI imports the conduit CLI's own verifier and
+   compiled-in trust anchors: root-signature check, freshness-only acceptance refused outright,
+   rollback against the committed high-water state (`verify/state.json`), and the CLI's own
+   7-day staleness window. Any failure — `ERR_INDEX_UNREACHABLE`, `ERR_INDEX_INTEGRITY`,
+   `ERR_INDEX_ROLLBACK`, `ERR_INDEX_STALE`, ... — exits non-zero here.
+2. The CLI's exit 0 **is** the verification verdict; the verified RAW bytes it wrote to
+   `verify/index.json` flow onward untouched (never re-parsed into a trust decision).
+3. Derive the render model (every computed fact — verified, effective status, default version,
    compat matrix — computed once, here).
-5. Fetch Scarf download stats, best-effort (never fails the build; no real data source is
+4. Fetch Scarf download stats, best-effort (never fails the build; no real data source is
    provisioned today, so this degrades to "unavailable" and the stats section is not rendered).
-6. `astro build`.
-7. Copy `index.json` byte-for-byte into `dist/` and verify the copy — never a re-serialization,
-   since a detached signature is computed over exact bytes.
+5. `astro build`.
+6. Copy the verified index bytes byte-for-byte into `dist/` and verify the copy — never a
+   re-serialization, since the detached signature is computed over exact bytes.
 
-A failure at steps 1-4 exits non-zero **before** `astro build` ever runs: no `dist/`.
+A failure at steps 1-4 exits non-zero **before** `astro build` ever runs — and `dist/` is
+removed at pipeline start, so a failed build provably leaves no `dist/` at all. The deployed
+site is untouched until a fully successful build's artifact is deployed.
+
+### Build inputs (environment)
+
+| Variable                       | Meaning                                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `REGISTRY_INDEX_URL`           | `--index` to pass the CLI (URL or local path). Unset = the CLI's default, the **live** index.                                  |
+| `REGISTRY_VERIFY_BIN`          | Path to a prebuilt `registry-verify` binary (CI builds one). Unset = `go run ./cmd/registry-verify` (requires Go — local dev). |
+| `REGISTRY_VERIFY_ANCHORS_FILE` | `--anchors-file` to pass the CLI — the test/offline anchors facility. Production CI must never set this.                       |
+
+The pre-S2 knobs `REGISTRY_INDEX_PATH` and `REGISTRY_MAX_STALENESS_MS` are **gone**: the build
+no longer reads a fixture from disk by default, and the staleness window is the CLI's own 7 days
+(`index.DefaultMaxStaleness`) — not a build knob at all. A genuinely stale live index fails the
+build with `ERR_INDEX_STALE`, and that is the alarm, not a config problem (see the CI section
+below).
+
+### CI and the staleness alarm
+
+`.github/workflows/ci.yml` runs the real verify against the **live** index on every build — PRs
+included. A red build-and-test with no code change therefore means the live index is stale
+(>7 days), tampered, or rolled back — a problem with the index, not with this repo's code.
+That is a feature: the build is the alarm. The fix is a human action (refresh/re-sign the index,
+or explicitly acknowledge the state), then re-dispatch — never a staleness override. The
+`ratchet-state` job commits the updated `verify/state.json` back to `main` after a successful
+main-branch build, so the rollback floor stays armed across CI runs; that job is
+self-terminating (the rebuild it triggers finds the state unchanged and pushes nothing).
 
 ## Scripts
 
@@ -126,8 +153,9 @@ A failure at steps 1-4 exits non-zero **before** `astro build` ever runs: no `di
 
 ## Known, flagged gaps (not silently deferred)
 
-- Index root-signature verification in the SITE is structural-only (see "Trust model") until S2
-  PR-2 wires the real verifier (`cmd/registry-verify`, landed in S2 PR-1) into the build.
+- Per-artifact verification at build time does not exist (see "Trust model" — S3). The index's
+  root signature IS verified at build time by the conduit CLI's verifier (S2), but the artifact
+  bytes themselves are only verified at install time, by your CLI.
 - Scarf stats fetch targets a placeholder endpoint shape; no token is provisioned, so the section
   is removed rather than shown as permanently "unavailable" (an empty shelf would imply a data
   source exists when none does).
