@@ -1,0 +1,178 @@
+---
+/**
+ * The verification report page (WS4 S3, plan AC 4.16): the human-readable
+ * record of what this site verified at build time, how, when, and what it
+ * does NOT mean. Every value comes from the build's own data — the verified
+ * index's identity, the artifacts report's generated-at/checked-at/verifier
+ * version, and the per-version verdicts — never hardcoded claims.
+ */
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { VerifiedBadge } from '../components/VerifiedBadge';
+import { EffectiveStatusTag } from '../components/EffectiveStatusTag';
+import SignatureNote, { SIGNATURE_NOTE_ID } from '../components/SignatureNote.astro';
+import { loadRenderModel } from '../lib/loadRenderModel';
+
+const model = loadRenderModel();
+const date = (iso?: string) => (iso ? new Date(iso).toISOString() : undefined);
+const firstCheckedAt = model.connectors
+  .flatMap((c) => c.versions)
+  .find((v) => v.verdictCheckedAt)?.verdictCheckedAt;
+---
+
+<BaseLayout title="Verification report — Conduit connector registry">
+  <h1>Verification report</h1>
+  <p>
+    This page records what the registry site&rsquo;s build verified and when. The site is static —
+    no client-side verification, no runtime network — so everything below was computed once, at
+    build time, by the <a
+      href="https://github.com/ConduitIO/conduit-connector-registry"
+      target="_blank"
+      rel="noopener noreferrer">conduit verifier CLI</a
+    >, and frozen into this page.
+  </p>
+
+  <section aria-labelledby="what-heading">
+    <h2 id="what-heading">What was verified</h2>
+    <ul>
+      <li>
+        <strong>The signed index itself</strong>: the registry index&rsquo;s root signature
+        (ed25519, JCS-canonicalized payload) against the compiled-in trust anchors, the
+        anti-rollback floor, and the CLI&rsquo;s own 7-day staleness window. Anything that fails
+        this step never becomes this site.
+      </li>
+      <li>
+        <strong>Every version&rsquo;s signatures</strong>: for each artifact, the referenced
+        Sigstore signature bundle was fetched (bundles only — never the binaries — bounded at
+        1&nbsp;MiB) and cryptographically verified against the trust anchors and the
+        publisher&rsquo;s pinned OIDC identity, and its message digest was checked against the
+        sha256 the index declares.
+      </li>
+      <li>
+        <strong>Every version&rsquo;s SLSA provenance</strong>: the referenced provenance bundle
+        (artifact-level, else version-level) was verified against the trust anchors, its subject
+        digest bound to the index-declared sha256, and its builder identity checked against the
+        expected SLSA builder.
+      </li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="how-heading">
+    <h2 id="how-heading">How</h2>
+    <p>
+      The same verifier code the <code>conduit</code> CLI&rsquo;s install path uses (<code
+        >pkg/registry/trust</code
+      >), compiled into
+      <code>cmd/registry-verify</code> and run by the site build with
+      <code>--require-root</code>. No signature logic is reimplemented on this site.
+    </p>
+  </section>
+
+  <section aria-labelledby="when-heading">
+    <h2 id="when-heading">When</h2>
+    <dl>
+      <dt>Index version</dt>
+      <dd><code>{model.indexVersion}</code></dd>
+      <dt>Index signing timestamp</dt>
+      <dd>
+        <time datetime={model.indexTimestamp}>{date(model.indexTimestamp)?.slice(0, 19)}Z</time>
+      </dd>
+      <dt>Site build / report generated</dt>
+      <dd><time datetime={model.generatedAt}>{date(model.generatedAt)?.slice(0, 19)}Z</time></dd>
+      <dt>Verifier version</dt>
+      <dd><code>{model.verifierVersion ?? 'unknown'}</code></dd>
+      <dt>Per-version verdicts checked at</dt>
+      <dd>
+        {firstCheckedAt ? `${date(firstCheckedAt)?.slice(0, 19)}Z` : '—'}
+      </dd>
+    </dl>
+  </section>
+
+  <section aria-labelledby="verdicts-heading">
+    <h2 id="verdicts-heading">Verdicts</h2>
+    <p>
+      Three states, one per version. <strong>Pass</strong> means every signature and the SLSA provenance
+      verified against the trust anchors and bound to the index-declared sha256.
+      <strong>Fail</strong> means a check failed — tampered bytes, the wrong identity, or non-binding
+      provenance. <strong>Not attempted</strong> means the verdict could not be reached: no provenance
+      reference in the index, an unfetchable bundle, or a malformed declaration. A missing reference is
+      never a pass.
+    </p>
+    <ul class="verdict-list">
+      {
+        model.connectors.map((c) => (
+          <li data-connector-name={c.name}>
+            <h3>
+              {c.displayName} <code>{c.name}</code>{' '}
+              <EffectiveStatusTag status={c.effectiveStatus} />
+            </h3>
+            <ul>
+              {c.versions.map((v) => (
+                <li>
+                  <code>{v.version}</code>{' '}
+                  <VerifiedBadge
+                    verdict={v.verdict}
+                    {...(v.verdictReason !== undefined ? { reason: v.verdictReason } : {})}
+                    {...(v.verdictCheckedAt !== undefined ? { checkedAt: v.verdictCheckedAt } : {})}
+                    descriptionId={SIGNATURE_NOTE_ID}
+                  />
+                  {v.verdictReason && <span class="verdict-reason"> {v.verdictReason}</span>}
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))
+      }
+    </ul>
+  </section>
+
+  <section aria-labelledby="not-heading">
+    <h2 id="not-heading">What this does not mean</h2>
+    <ul>
+      <li>
+        <strong>Not a review of the connector&rsquo;s code or behavior.</strong> A passing verdict is
+        about signatures and provenance, not about whether the connector is good, safe, or maintained.
+      </li>
+      <li>
+        <strong>Not a check of the bytes you download.</strong> The bundles vouch for the bytes the index
+        declares. The actual file you install is verified by
+        <code>conduit connectors install</code> at install time, against the same anchors.
+      </li>
+      <li>
+        <strong>Not a promise the index stays fresh.</strong> Verdicts are as of the report timestamp
+        above. If the index passes the 7-day staleness window without a new signature, the next site build
+        fails — this site never serves a stale index.
+      </li>
+      <li>
+        <strong>Not a check of revoked identities.</strong> A revoked publisher&rsquo;s versions render
+        as not attempted — a verifying signature under a revoked identity does not establish trust — and
+        revocation is flagged loudly on the connector page.
+      </li>
+    </ul>
+  </section>
+
+  <SignatureNote />
+</BaseLayout>
+
+<style>
+  .verdict-list {
+    list-style: none;
+    padding: 0;
+  }
+  .verdict-list ul {
+    list-style: none;
+    padding-left: var(--conduit-space-3);
+  }
+  .verdict-list li {
+    margin: var(--conduit-space-2) 0;
+  }
+  .verdict-reason {
+    color: var(--conduit-color-text-muted);
+  }
+  dt {
+    font-weight: 600;
+    margin-top: var(--conduit-space-2);
+  }
+  dd {
+    margin-left: var(--conduit-space-3);
+  }
+</style>

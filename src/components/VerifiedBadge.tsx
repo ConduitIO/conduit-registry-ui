@@ -1,36 +1,46 @@
 import type { CSSProperties } from 'react';
+import type { ArtifactVerdict } from '../lib/verdicts';
 import styles from './VerifiedBadge.module.css';
 
 /**
- * Renders the result of `deriveVerified()` (src/lib/deriveVerified.ts) — this
- * component NEVER computes trust itself, it only displays a boolean its caller
- * already derived from the verified index payload.
+ * Renders the build-time per-version signature verdict (WS4 S3,
+ * src/lib/verdicts.ts) — the badge NEVER computes trust itself, it only
+ * displays a three-state verdict its caller already merged from the Go
+ * verifier CLI's artifacts report (cmd/registry-verify --artifacts):
  *
- * Label wording is deliberately narrow: `deriveVerified()` only confirms that
- * this version's entry in the verified index *references* a signature bundle and
- * an SLSA provenance bundle (plus isn't yanked/revoked) — nobody in this build
- * pipeline downloads the artifact or runs `cosign verify` against it (see
- * deriveVerified.ts's doc comment for the full two-layer trust argument and its
- * residual risk). The INDEX this entry comes from is itself cryptographically
- * verified at build time by the conduit CLI's verifier (cmd/registry-verify,
- * --require-root) — see SignatureNote.astro — but "Signature on file" says
- * exactly this-version-much and no more. Real cryptographic verification of the
- * actual bytes happens at install time (`conduit connectors install`), not
- * here — see SignatureNote.astro, which every page rendering this badge must
- * also render so that caveat is real, visible page text next to the badge, not
- * a tooltip (CLAUDE.md: "say what was actually verified").
+ *   pass          — every signature bundle verified against the trust anchors
+ *                   and the connector's pinned identity, and the SLSA
+ *                   provenance bound to the index-declared sha256.
+ *   fail          — a bundle verified-failed (tampered bytes, wrong identity,
+ *                   non-binding provenance). Reason in the label's title and
+ *                   aria-label.
+ *   not_attempted — the verdict could not be reached: no provenance reference
+ *                   in the index, an unfetchable bundle, or a malformed
+ *                   declaration. NEVER a pass — no bundle, no green.
  *
- * Deliberately NOT a red/failure badge for `verified={false}`: a connector
- * between registration and its first signed release looks different from one
- * that actively failed a check (yanked/revoked get their own loud components —
- * EffectiveStatusTag, RevocationBanner). A muted/neutral state here avoids
- * conflating "no signature reference yet" with "known bad."
+ * Reason strings come from the CLI verbatim (stable report contract) and
+ * answer "what do I do about this" — see artifacts.go's reason constants.
+ * `checkedAt` is the CLI's wall clock at verdict time: the badge's as-of date.
+ *
+ * The badge is deliberately neutral for not_attempted — a connector between
+ * registration and its first signed release looks different from one that
+ * actively failed a check (fail gets the red tone; yanked/revoked get their
+ * own loud components — EffectiveStatusTag, RevocationBanner). Never a
+ * tooltip: the reason travels in the accessible label and the visible title,
+ * and the page renders SignatureNote's qualifying text next to the badge.
  */
 export function VerifiedBadge({
-  verified,
+  verdict,
+  reason,
+  checkedAt,
   descriptionId,
 }: {
-  verified: boolean;
+  verdict: ArtifactVerdict;
+  /** The CLI's verdict reason, rendered in the title + aria-label. */
+  reason?: string;
+  /** The CLI's wall clock at verdict time (RFC3339), shown as the as-of
+   * date. */
+  checkedAt?: string;
   /** id of the page's `SignatureNote` paragraph (see SignatureNote.astro), wired
    * via `aria-describedby` so a screen-reader user who lands directly on this
    * badge — not just one who reads the page top-to-bottom — still gets the
@@ -38,15 +48,26 @@ export function VerifiedBadge({
    * the badge in isolation without a matching note element in the DOM. */
   descriptionId?: string;
 }) {
-  const tone = verified ? 'signed' : 'unsigned';
-  const color = verified ? '--conduit-color-status-running' : '--conduit-color-status-unknown';
-  const label = verified ? 'Signature on file' : 'No signature on file';
-  const glyph = verified ? '✓' : '–';
+  const asOf = checkedAt ? new Date(checkedAt).toISOString().slice(0, 10) : undefined;
+  const title = [reason, asOf ? `as of ${asOf}` : null].filter(Boolean).join(' · ');
+  const label = {
+    pass: 'Signatures verified',
+    fail: 'Signature check failed',
+    not_attempted: 'Signature not verified',
+  }[verdict];
+  const glyph = { pass: '✓', fail: '✕', not_attempted: '–' }[verdict];
+  const color = {
+    pass: '--conduit-color-status-running',
+    fail: '--conduit-color-status-degraded',
+    not_attempted: '--conduit-color-status-unknown',
+  }[verdict];
 
   return (
     <span
       className={styles.badge}
-      data-tone={tone}
+      data-tone={verdict}
+      title={title || undefined}
+      aria-label={title ? `${label}. ${title}` : label}
       style={{ ['--badge-color']: `var(${color})` } as CSSProperties}
       {...(descriptionId ? { 'aria-describedby': descriptionId } : {})}
     >

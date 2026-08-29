@@ -30,10 +30,20 @@ const installCommand = `conduit connectors install ${connector.name}`;
       <code>{connector.name}</code>
     </h1>
     <p>
-      <VerifiedBadge
-        verified={defaultVersion ? defaultVersion.verified : false}
-        descriptionId={SIGNATURE_NOTE_ID}
-      />
+      {
+        defaultVersion && (
+          <VerifiedBadge
+            verdict={defaultVersion.verdict}
+            {...(defaultVersion.verdictReason !== undefined
+              ? { reason: defaultVersion.verdictReason }
+              : {})}
+            {...(defaultVersion.verdictCheckedAt !== undefined
+              ? { checkedAt: defaultVersion.verdictCheckedAt }
+              : {})}
+            descriptionId={SIGNATURE_NOTE_ID}
+          />
+        )
+      }
       <EffectiveStatusTag status={connector.effectiveStatus} />
     </p>
     <SignatureNote />
@@ -75,6 +85,15 @@ const installCommand = `conduit connectors install ${connector.name}`;
         <p>
           Install is disabled for this connector — see the notice above. Do not attempt to install
           it manually until the status changes.
+        </p>
+      ) : defaultVersion && defaultVersion.verdict === 'fail' ? (
+        // WS4 4.13: a version with a failed verification verdict never gets
+        // an active install command — the command would install exactly the
+        // bytes the build proved are tampered/misattributed.
+        <p data-install-gated="fail">
+          Install is disabled for version <code>{defaultVersion.version}</code>: its signature
+          verification failed at build time ({defaultVersion.verdictReason ?? 'unknown reason'}). Do
+          not install this version.
         </p>
       ) : (
         <CopyInstallButton command={installCommand} client:load />
@@ -125,7 +144,12 @@ const installCommand = `conduit connectors install ${connector.name}`;
                 )}
               </td>
               <td>
-                <VerifiedBadge verified={v.verified} descriptionId={SIGNATURE_NOTE_ID} />
+                <VerifiedBadge
+                  verdict={v.verdict}
+                  {...(v.verdictReason !== undefined ? { reason: v.verdictReason } : {})}
+                  {...(v.verdictCheckedAt !== undefined ? { checkedAt: v.verdictCheckedAt } : {})}
+                  descriptionId={SIGNATURE_NOTE_ID}
+                />
               </td>
             </tr>
           ))
