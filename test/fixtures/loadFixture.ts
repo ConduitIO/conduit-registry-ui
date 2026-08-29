@@ -19,10 +19,11 @@ export function loadSampleIndexRaw(): string {
   return readFileSync(path.join(here, 'sample-index.json'), 'utf-8');
 }
 
-/** The sample index's own timestamp — pass as `now` to verifyAndParseIndex in
- * tests so freshness checks are deterministic and don't depend on wall-clock
- * time drifting away from the fixture's fixed `index.timestamp`. This file is
- * a TEMPLATE for the build: scripts/generate-fixture.ts stamps a fresh
- * timestamp onto it at build time, so the build's default path never reads
- * this frozen timestamp as-is (see scripts/build-site.ts). */
+/** The sample index's own frozen timestamp. Since S2 PR-2 the build never
+ * reads this template directly: cmd/registry-verify's TestGenerateSignedFixture
+ * (the Go fixture generator, driven by the vitest integration suite) stamps a
+ * fresh timestamp onto this payload and ROOT-SIGNS it with a test key, because
+ * the real verifier CLI enforces its own 7-day staleness window against the
+ * wall clock. This template's own root signature is synthetic and must never
+ * be trusted — TestCommittedTemplateIsNotTrusted asserts exactly that. */
 export const SAMPLE_INDEX_TIMESTAMP = '2026-07-14T09:00:00Z';

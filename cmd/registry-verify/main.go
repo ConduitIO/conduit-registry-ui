@@ -14,8 +14,9 @@
 
 // Command registry-verify verifies the root-signed registry index at BUILD
 // time and fails the build closed. It is the Go half of WS4 S2: the Astro
-// build (PR-2) runs this CLI and copies the verified raw index bytes into
-// dist/ — an unverified index never reaches the site.
+// build (scripts/build-site.ts) runs this CLI with --require-root and copies
+// the verified raw index bytes into dist/ — an unverified index never reaches
+// the site.
 //
 // Import, don't reimplement. This CLI imports conduit's own verifier and
 // trust anchors — pkg/registry/index.Verify and
@@ -26,7 +27,11 @@
 //
 // Pipeline (mirrors pkg/registry.TrustedVerifier.VerifyIndex, R-1 §a-§b):
 //
-//  1. Fetch the index over HTTP (index.Fetch, bounded at 8 MiB).
+//  1. Fetch the index over HTTP (index.Fetch, bounded at 8 MiB), or — when
+//     --index names a local file (not an http(s) URL) — read it with
+//     index.FetchFile (offline/test mode, same size cap). A local path is
+//     not a trust change: whoever controls the build's arguments already
+//     controls the build, exactly the state-file boundary below.
 //  2. Verify signatures against the compiled-in anchors (index.Verify) —
 //     a structurally valid freshness-only index with no root signature is
 //     ERR_INDEX_INTEGRITY, never accepted by a client that hasn't seen the
@@ -54,11 +59,25 @@
 // root-only (the index-sign.yml postmortem), but unrecoverable without
 // manual intervention when it is not.
 //
-// The site build (PR-2) must therefore run with --require-root: a freshness
-// signature can never be the FIRST or ONLY signature this trust core
-// accepts, so no freshness-signed index can ratchet the state floor. The
-// default stays accept-freshness to mirror the CLI's own behavior for
+// The site build (scripts/build-site.ts) therefore runs with --require-root:
+// a freshness signature can never be the FIRST or ONLY signature this trust
+// core accepts, so no freshness-signed index can ratchet the state floor.
+// The default stays accept-freshness to mirror the CLI's own behavior for
 // interactive use.
+//
+// # --anchors-file (test/offline facility)
+//
+// --anchors-file replaces the compiled-in anchors with a TrustAnchors JSON
+// file ({roots, freshness} maps of keyId -> base64 ed25519 public-key
+// bytes). It exists so the
+// site's build-pipeline tests can drive the REAL binary against locally
+// generated fixtures without network access or production keys. Production
+// CI must never set it. This weakens nothing: an attacker who can set a
+// build flag can already edit the committed build script or state file (the
+// state-file boundary above), so --anchors-file grants no capability that
+// repo write access does not already include. A missing or malformed file
+// fails the build with ERR_TRUST_ANCHORS_UNAVAILABLE — the same fail-closed
+// code a build with no usable anchors at all must get.
 //
 // # State-file threat model
 //
@@ -96,11 +115,14 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/conduitio/conduit/cmd/conduit/root/connectors"
@@ -150,6 +172,51 @@ type cliError struct {
 
 func (e *cliError) Error() string { return e.msg }
 
+// anchorsFileJSON mirrors index.TrustAnchors for JSON interchange: maps of
+// keyId -> public-key bytes, base64-encoded by encoding/json
+// (ed25519.PublicKey is
+// []byte). The fixture generator test (fixturegen_test.go) writes exactly
+// this shape; a malformed file is a build defect and must fail closed.
+type anchorsFileJSON struct {
+	Roots     map[string][]byte `json:"roots"`
+	Freshness map[string][]byte `json:"freshness"`
+}
+
+// loadAnchorsFile loads a TrustAnchors JSON file (--anchors-file). Any
+// failure — unreadable, malformed, empty — maps to CodeTrustAnchorsUnavailable
+// (ERR_TRUST_ANCHORS_UNAVAILABLE): a build whose anchors could not be loaded
+// verifies nothing and must not silently fall back to any other key set.
+func loadAnchorsFile(path string) (index.TrustAnchors, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return index.TrustAnchors{}, conduiterr.Wrap(registry.CodeTrustAnchorsUnavailable,
+			fmt.Sprintf("could not read anchors file %s", path), err)
+	}
+	var parsed anchorsFileJSON
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return index.TrustAnchors{}, conduiterr.Wrap(registry.CodeTrustAnchorsUnavailable,
+			fmt.Sprintf("anchors file %s is not valid TrustAnchors JSON", path), err)
+	}
+	if len(parsed.Roots) == 0 && len(parsed.Freshness) == 0 {
+		return index.TrustAnchors{}, conduiterr.Wrap(registry.CodeTrustAnchorsUnavailable,
+			fmt.Sprintf("anchors file %s trusts nothing (empty roots and freshness)", path), nil)
+	}
+	toPub := func(m map[string][]byte) map[string]ed25519.PublicKey {
+		out := make(map[string]ed25519.PublicKey, len(m))
+		for keyID, spki := range m {
+			// The file stores the raw key bytes (base64 via encoding/json);
+			// ed25519.PublicKey IS those bytes, so verification uses exactly
+			// what the generator signed with.
+			out[keyID] = ed25519.PublicKey(spki)
+		}
+		return out
+	}
+	return index.TrustAnchors{
+		Roots:     toPub(parsed.Roots),
+		Freshness: toPub(parsed.Freshness),
+	}, nil
+}
+
 // productionAnchors returns this build's compiled-in registry trust anchors:
 // the pinned conduit module's go:embed'd production PEMs, parsed by that
 // package's init. Never copied here. A stripped/broken module must fail
@@ -175,7 +242,7 @@ func main() {
 func realMain(args []string) int {
 	fs := flag.NewFlagSet("registry-verify", flag.ContinueOnError)
 	indexURL := fs.String("index", registry.DefaultIndexURL,
-		"URL of the signed registry index to verify")
+		"URL of the signed registry index to verify, or a local file path (read via index.FetchFile — offline/test mode, same 8 MiB cap; see the package doc)")
 	outPath := fs.String("out", defaultOutPath,
 		"where to write the verified RAW index bytes (the build copies these into dist/)")
 	statePath := fs.String("state", defaultStatePath,
@@ -183,6 +250,8 @@ func realMain(args []string) int {
 	timeout := fs.Duration("timeout", defaultTimeout, "fetch timeout")
 	requireRoot := fs.Bool("require-root", false,
 		"refuse an index accepted on a freshness signature alone — only a root signature authorizes this build's trust core (the site build must pass this; see the ratchet-wedge note in the package doc)")
+	anchorsFile := fs.String("anchors-file", "",
+		"path to a TrustAnchors JSON file ({roots, freshness} maps of keyId -> base64 ed25519 public-key bytes) — test/offline facility; production CI must never set this (compiled-in production anchors are the default; see the package doc)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -191,7 +260,13 @@ func realMain(args []string) int {
 		return exitUsage
 	}
 
-	anchors, err := productionAnchors()
+	var anchors index.TrustAnchors
+	var err error
+	if *anchorsFile != "" {
+		anchors, err = loadAnchorsFile(*anchorsFile)
+	} else {
+		anchors, err = productionAnchors()
+	}
 	if err != nil {
 		fail(err)
 		return exitFail
@@ -247,7 +322,16 @@ func run(ctx context.Context, opts options) error {
 		}
 	}
 
-	raw, err := index.Fetch(ctx, opts.indexURL)
+	// Fetch over HTTP for a URL, from disk for a local path (offline/test
+	// mode). Both go through the pinned module's 8 MiB cap; both produce the
+	// exact bytes Verify will check, so a local fixture exercises the same
+	// pipeline as the live index.
+	var raw []byte
+	if strings.HasPrefix(opts.indexURL, "http://") || strings.HasPrefix(opts.indexURL, "https://") {
+		raw, err = index.Fetch(ctx, opts.indexURL)
+	} else {
+		raw, err = index.FetchFile(opts.indexURL)
+	}
 	if err != nil {
 		return err
 	}

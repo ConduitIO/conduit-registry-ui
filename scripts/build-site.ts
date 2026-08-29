@@ -1,109 +1,150 @@
 #!/usr/bin/env tsx
 /**
- * The registry site's own build orchestrator (step6-web-ui.md §3). Each numbered
- * step is a hard gate for the ones after it unless marked "best-effort" — a
- * failure at steps 1-4 or 8 (typecheck happens via `astro check` in CI, not
- * here) must exit non-zero BEFORE `astro build` ever runs, so there is never a
- * partial/empty dist/ and never a deploy from bad data. Steps:
+ * The registry site's own build orchestrator (step6-web-ui.md §3). Each
+ * numbered step is a hard gate for the ones after it unless marked
+ * "best-effort" — a failure before step 6 must exit non-zero BEFORE
+ * `astro build` ever runs, so there is never a partial/empty dist/ and never
+ * a deploy from bad data. Steps:
  *
- *   1. Obtain the signed index (read from disk — no network hop for the
- *      primary path). Relocated (WS4 S1) out of the monorepo that owns
- *      `index/`; the default source is a fixture synthesized fresh at build
- *      time (scripts/generate-fixture.ts) so the real staleness window
- *      applies — see the resolveIndexPath() comment below.
- *   2. Verify the index's own root signature (STUBBED — see src/lib/verifyIndex.ts).
- *   3. Freshness check.
- *   4. Derive the render model (every derived field computed once, here).
- *   5. Fetch Scarf stats — BEST-EFFORT, never fails the build.
- *   6. Write the generated render-model.json + public/search-manifest.json
+ *   1. Fetch + verify the signed index with the Go verifier CLI
+ *      (cmd/registry-verify, WS4 S2): --require-root against the live index
+ *      (registry.DefaultIndexURL, the CLI's compiled-in default) unless
+ *      REGISTRY_INDEX_URL points elsewhere. The CLI imports the conduit
+ *      CLI's own verifier + compiled-in trust anchors — root-signature
+ *      check, rollback against the committed high-water state
+ *      (verify/state.json), and the CLI's 7-day staleness window. Any
+ *      failure (ERR_INDEX_UNREACHABLE / ERR_INDEX_INTEGRITY /
+ *      ERR_INDEX_ROLLBACK / ERR_INDEX_STALE / ...) exits non-zero here: no
+ *      dist/, no deploy, the previous site stays up.
+ *   2. Read the verified RAW bytes the CLI wrote to --out (verify/index.json).
+ *      The CLI's exit 0 IS the verification verdict: `verified: true` flows
+ *      into the render model from here, never from a re-check.
+ *   3. Derive the render model (every derived field computed once, here).
+ *   4. Fetch Scarf stats — BEST-EFFORT, never fails the build.
+ *   5. Write the generated render-model.json + public/search-manifest.json
  *      Astro's pages/build consume.
- *   7. Run `astro build`.
- *   8. Copy index.json BYTE-FOR-BYTE into dist/ (never re-serialized — see the
- *      comment at COPY_INDEX below) and verify the copy.
+ *   6. Run `astro build`.
+ *   7. Copy the verified RAW index bytes BYTE-FOR-BYTE into dist/ (never
+ *      re-serialized — see the comment at COPY_INDEX below) and verify the
+ *      copy.
  *
  * The a11y scan (scripts/axe-scan.ts), deploy, and post-deploy smoke check
  * (scripts/post-deploy-smoke.ts) are separate CI workflow steps, run in that
- * order AFTER this script exits 0 — see .github/workflows/ci.yml /
- * deploy.yml. They stay separate scripts so each is independently testable and
- * runnable locally without needing a live deploy target.
+ * order AFTER this script exits 0 — see .github/workflows/ci.yml. They stay
+ * separate scripts so each is independently testable and runnable locally
+ * without needing a live deploy target.
+ *
+ * # Environment
+ *
+ *   REGISTRY_INDEX_URL          --index to pass the CLI (URL or local path);
+ *                                unset = the CLI's default, the LIVE index
+ *                                at registry.conduitdata.io/index.json.
+ *                                REFUSED in GitHub Actions (ERR_BUILD_CONFIG):
+ *                                CI must verify the live index.
+ *   REGISTRY_VERIFY_BIN         path to a prebuilt registry-verify binary;
+ *                                unset = `go run ./cmd/registry-verify`
+ *                                (requires Go — used for local dev).
+ *   REGISTRY_VERIFY_ANCHORS_FILE  --anchors-file to pass the CLI; the
+ *                                test/offline anchors facility. REFUSED in
+ *                                GitHub Actions (ERR_BUILD_CONFIG), same
+ *                                reason: CI verifies against the compiled-in
+ *                                production anchors, always.
+ *
+ * The pre-S2 knobs REGISTRY_INDEX_PATH and REGISTRY_MAX_STALENESS_MS are
+ * GONE: the build no longer reads a fixture from disk by default, and the
+ * staleness window is now the CLI's own 7 days (index.DefaultMaxStaleness) —
+ * not a build knob at all. A genuinely stale live index fails the build with
+ * ERR_INDEX_STALE, and that is the alarm, not a config problem.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { verifyAndParseIndex, DEFAULT_MAX_STALENESS_MS } from '../src/lib/verifyIndex';
+import { verifyIndexViaCli } from '../src/lib/verifyViaCli';
 import { buildRenderModel } from '../src/lib/renderModel';
 import { mergeScarfStats } from '../src/lib/scarfStats';
 import { fetchAllScarfStats } from './fetchScarfStats';
-import { writeGeneratedFixture } from './generate-fixture';
 import { BuildError } from '../src/lib/errors';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(here, '..');
 
-// Relocation note (WS4 S1): prior to the move, `index/` and `web/` were
-// colocated in `conduit-connector-registry` and this defaulted to
-// `../index/index.json` (the monorepo parent). Now that `web/` IS this
-// repo's root, that default would resolve outside the repo entirely. The
-// bundled fixture is the only index this repo owns until S2 replaces this
-// whole read-from-disk step with a fetch-and-verify pipeline against the
-// live signed index (WS4 plan §5).
-//
-// Fixture freshness (WS4 S1): `test/fixtures/sample-index.json` is a committed
-// TEMPLATE with a frozen timestamp (deterministic for tests, which pass `now`
-// explicitly) — it must never be fed to the freshness gate as-is, because the
-// gate compares against the wall clock at the real REGISTRY_MAX_STALENESS_MS
-// window (default 30 days) and any fixed timestamp rots. The build therefore
-// synthesizes a fresh fixture via writeGeneratedFixture() (see
-// scripts/generate-fixture.ts) whenever REGISTRY_INDEX_PATH is unset; a real
-// index file supplied via REGISTRY_INDEX_PATH is read byte-for-byte, untouched,
-// and faces the same real window.
 const GENERATED_DIR = path.join(webRoot, '.generated');
 const RENDER_MODEL_PATH = path.join(GENERATED_DIR, 'render-model.json');
 const PUBLIC_DIR = path.join(webRoot, 'public');
 const SEARCH_MANIFEST_PATH = path.join(PUBLIC_DIR, 'search-manifest.json');
 const DIST_DIR = path.join(webRoot, 'dist');
 
-function resolveIndexPath(): string {
-  const explicit = process.env['REGISTRY_INDEX_PATH'];
-  if (explicit) return explicit;
-  // Default: synthesize a fresh fixture from the committed template — never
-  // read the frozen template itself (see the fixture-freshness note above).
-  const generated = writeGeneratedFixture();
-  console.log(`[registry-web] synthesized fresh fixture index at ${generated}`);
-  return generated;
-}
+// The committed high-water state file: the CLI's rollback floor and its
+// memory across ephemeral CI runners. The build ratchets it in the
+// workspace; CI commits the ratcheted file back on main (see ci.yml's
+// ratchet-state job) so the rollback alarm stays armed across runs.
+const STATE_PATH = path.join(webRoot, 'verify', 'state.json');
+// The CLI writes the verified RAW bytes here; step 7 copies them into dist/.
+const VERIFIED_INDEX_PATH = path.join(webRoot, 'verify', 'index.json');
 
 async function main(): Promise<void> {
-  const INDEX_PATH = resolveIndexPath();
-  console.log(`[registry-web] reading index from ${INDEX_PATH}`);
-  if (!existsSync(INDEX_PATH)) {
-    throw new BuildError('ERR_INDEX_UNREACHABLE', `index file not found at ${INDEX_PATH}`);
-  }
-  const rawBuffer = readFileSync(INDEX_PATH);
-  const raw = rawBuffer.toString('utf-8');
+  // Step 0: never let a stale dist/ from a previous run be mistaken for this
+  // build's output. A failure at any later step now provably leaves no
+  // dist/ at all — and the deployed site is untouched until a fully
+  // successful build's artifact is deployed.
+  rmSync(DIST_DIR, { recursive: true, force: true });
 
-  // Steps 2-3: verify (stubbed) + freshness. Throws BuildError on any failure —
-  // caught in run() below, which exits non-zero before astro build is invoked.
-  const maxStalenessMs = process.env['REGISTRY_MAX_STALENESS_MS']
-    ? Number(process.env['REGISTRY_MAX_STALENESS_MS'])
-    : DEFAULT_MAX_STALENESS_MS;
-  const verifiedIndex = verifyAndParseIndex(raw, { maxStalenessMs });
+  // Step 1: fetch + verify via the CLI. Throws BuildError carrying the CLI's
+  // own stable error code (ERR_INDEX_UNREACHABLE, ERR_INDEX_INTEGRITY,
+  // ERR_INDEX_ROLLBACK, ERR_INDEX_STALE, ...) — caught in run() below, which
+  // exits non-zero before astro build is ever invoked.
   console.log(
-    `[registry-web] index OK: schemaVersion=${verifiedIndex.payload.schemaVersion} ` +
-      `version=${verifiedIndex.payload.index.version} connectors=${verifiedIndex.payload.connectors.length} ` +
-      `(cryptographically verified: ${verifiedIndex.verified})`
+    `[registry-web] verifying index with cmd/registry-verify --require-root` +
+      (process.env['REGISTRY_INDEX_URL']
+        ? ` (--index ${process.env['REGISTRY_INDEX_URL']})`
+        : ` (live index, the CLI's compiled-in default)`)
+  );
+  const raw = verifyIndexViaCli({
+    ...(process.env['REGISTRY_INDEX_URL'] ? { indexURL: process.env['REGISTRY_INDEX_URL'] } : {}),
+    ...(process.env['REGISTRY_VERIFY_ANCHORS_FILE']
+      ? { anchorsFile: process.env['REGISTRY_VERIFY_ANCHORS_FILE'] }
+      : {}),
+    statePath: STATE_PATH,
+    outPath: VERIFIED_INDEX_PATH,
+    cwd: webRoot,
+  });
+
+  // Step 2: the CLI's exit 0 (--require-root) is the whole verification
+  // verdict. The raw bytes are already trusted; this parse is for the render
+  // model only, never a re-check. Refuse anything that isn't even an
+  // envelope (defensive — the CLI would have refused it first).
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw.toString('utf-8')).payload;
+  } catch (err) {
+    throw new BuildError(
+      'ERR_INDEX_INTEGRITY',
+      `verified index is not a parseable envelope: ${(err as Error).message}`
+    );
+  }
+  if (typeof payload !== 'object' || payload === null) {
+    throw new BuildError('ERR_INDEX_INTEGRITY', 'verified index has no payload object');
+  }
+  const typedPayload = payload as Parameters<typeof buildRenderModel>[0];
+  const schemaVersion = (typedPayload as { schemaVersion?: unknown }).schemaVersion;
+  console.log(
+    `[registry-web] index OK: schemaVersion=${String(schemaVersion)} ` +
+      `version=${String((typedPayload as { index?: { version?: unknown } }).index?.version)} ` +
+      `connectors=${String((typedPayload as { connectors?: unknown[] }).connectors?.length)} ` +
+      `(root-verified by the conduit verifier CLI)`
   );
 
-  // Step 4: derive render model (throws BuildError on e.g. reserved-name collision).
-  let model = buildRenderModel(verifiedIndex.payload, { verified: verifiedIndex.verified });
+  // Step 3: derive render model (throws BuildError on e.g. reserved-name collision).
+  // The CLI's exit 0 with --require-root IS the root-verified verdict.
+  let model = buildRenderModel(typedPayload, { verified: true });
 
-  // Step 5: Scarf stats, best-effort — a Scarf-fetch failure never throws past
-  // fetchAllScarfStats (it degrades to `unavailable: true` per connector).
+  // Step 4: Scarf stats, best-effort — a Scarf-fetch failure never throws
+  // past fetchAllScarfStats (it degrades to `unavailable: true` per connector).
   const stats = await fetchAllScarfStats(model.connectors.map((c) => c.name));
   model = mergeScarfStats(model, stats);
 
-  // Step 6: write generated artifacts consumed by the Astro build.
+  // Step 5: write generated artifacts consumed by the Astro build.
   mkdirSync(GENERATED_DIR, { recursive: true });
   writeFileSync(RENDER_MODEL_PATH, JSON.stringify(model, null, 2));
   mkdirSync(PUBLIC_DIR, { recursive: true });
@@ -112,7 +153,7 @@ async function main(): Promise<void> {
     `[registry-web] wrote render model (${model.connectors.length} connectors) + search manifest`
   );
 
-  // Step 7: astro build.
+  // Step 6: astro build.
   const astroResult = spawnSync('npx', ['astro', 'build'], {
     cwd: webRoot,
     stdio: 'inherit',
@@ -122,20 +163,20 @@ async function main(): Promise<void> {
     throw new Error(`astro build failed with exit code ${astroResult.status ?? 'unknown'}`);
   }
 
-  // Step 8: copy index.json BYTE-FOR-BYTE into dist/ — this must NEVER be a
-  // re-serialization (JSON.parse + JSON.stringify would reformat whitespace and
-  // could reorder keys depending on the parser, silently invalidating the
-  // detached signature, which is computed over the exact JCS-canonicalized
-  // payload bytes). We write the exact same Buffer we verified above, untouched.
+  // Step 7: copy the verified index BYTE-FOR-BYTE into dist/ — this must
+  // NEVER be a re-serialization (JSON.parse + JSON.stringify would reformat
+  // whitespace and could reorder keys depending on the parser, silently
+  // invalidating the detached signature, which is computed over the exact
+  // JCS-canonicalized payload bytes). We copy the exact same bytes the CLI
+  // verified and wrote to --out, untouched.
+  mkdirSync(DIST_DIR, { recursive: true });
   const distIndexPath = path.join(DIST_DIR, 'index.json');
-  writeFileSync(distIndexPath, rawBuffer);
+  writeFileSync(distIndexPath, raw);
   const writtenBack = readFileSync(distIndexPath);
-  if (!writtenBack.equals(rawBuffer)) {
-    throw new Error(
-      'dist/index.json does not byte-match the verified source index.json — refusing to proceed'
-    );
+  if (!writtenBack.equals(raw)) {
+    throw new Error('dist/index.json does not byte-match the verified index — refusing to proceed');
   }
-  console.log(`[registry-web] dist/index.json byte-verified against ${INDEX_PATH}`);
+  console.log(`[registry-web] dist/index.json byte-verified against ${VERIFIED_INDEX_PATH}`);
   console.log('[registry-web] build complete.');
 }
 

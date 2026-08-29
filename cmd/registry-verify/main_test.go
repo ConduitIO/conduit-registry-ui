@@ -51,7 +51,7 @@ import (
 
 const (
 	// helperEnv marks the subprocess as the re-exec'd helper; helperPubKeyEnv
-	// carries the SPKI of the key the child should trust (base64 DER).
+	// carries the ed25519 public-key bytes the child should trust (base64).
 	helperEnv       = "REGISTRY_VERIFY_HELPER"
 	helperPubKeyEnv = "REGISTRY_VERIFY_HELPER_PUB_KEY"
 )
@@ -763,5 +763,112 @@ func TestExitCode_UsageErrorExit2(t *testing.T) {
 				t.Fatal("usage errors must print a message to stderr")
 			}
 		})
+	}
+}
+
+// TestVerify_LocalFileMode proves the offline path: --index pointing at a
+// local signed file verifies through index.FetchFile with the same pipeline
+// as the live URL — the fixture mode the site's build-pipeline tests use.
+func TestVerify_LocalFileMode(t *testing.T) {
+	pub, priv := mustGenerateKey(t)
+	payload := makePayload(43, time.Now().UTC())
+	envelope := signPayload(t, payload, "root", priv)
+
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.json")
+	if err := os.WriteFile(indexPath, envelope, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	statePath, outPath := tempPaths(t)
+
+	if err := runVerify(t, indexPath, statePath, outPath, testAnchors(pub), time.Now(), true); err != nil {
+		t.Fatalf("local-file verify failed: %v", err)
+	}
+	written, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(written, envelope) {
+		t.Fatalf("out bytes do not match the verified local file")
+	}
+}
+
+// TestVerify_LocalFileMissing: a nonexistent --index path must fail closed
+// with the same unreachable code as a dead URL.
+func TestVerify_LocalFileMissing(t *testing.T) {
+	_, outPath := tempPaths(t)
+	pub, _ := mustGenerateKey(t)
+	err := runVerify(t, filepath.Join(t.TempDir(), "nope.json"), filepath.Join(t.TempDir(), "state.json"), outPath,
+		testAnchors(pub), time.Now(), true)
+	if err == nil {
+		t.Fatalf("missing local file verified — fail-closed violated")
+	}
+	if got := errCode(err); got != "ERR_INDEX_UNREACHABLE" {
+		t.Fatalf("missing local file: got code %q, want ERR_INDEX_UNREACHABLE", got)
+	}
+	if _, statErr := os.Stat(outPath); statErr == nil {
+		t.Fatalf("rejected index still wrote an out file")
+	}
+}
+
+// TestAnchorsFile_RealMain verifies the --anchors-file facility end to end
+// through the real binary surface: a fixture signed by a test key verifies
+// when the matching anchors file is passed, and an empty anchors file fails
+// closed with ERR_TRUST_ANCHORS_UNAVAILABLE.
+func TestAnchorsFile_RealMain(t *testing.T) {
+	pub, priv := mustGenerateKey(t)
+	payload := makePayload(44, time.Now().UTC())
+	envelope := signPayload(t, payload, "root", priv)
+	keyID, err := index.KeyID(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.json")
+	if err := os.WriteFile(indexPath, envelope, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	anchorsPath := filepath.Join(dir, "anchors.json")
+	anchors := map[string]any{"roots": map[string]any{keyID: pub}, "freshness": map[string]any{}}
+	anchorsJSON, err := json.Marshal(anchors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(anchorsPath, anchorsJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	args := []string{
+		"--index", indexPath,
+		"--anchors-file", anchorsPath,
+		"--state", filepath.Join(dir, "state.json"),
+		"--out", filepath.Join(dir, "out.json"),
+		"--require-root",
+	}
+	if code := realMain(args); code != exitOK {
+		t.Fatalf("realMain with matching anchors file exited %d, want %d", code, exitOK)
+	}
+
+	// Empty anchors file: must fail closed, and the code must be the
+	// documented ERR_TRUST_ANCHORS_UNAVAILABLE — a build whose anchors could
+	// not be loaded verifies nothing.
+	emptyPath := filepath.Join(dir, "empty-anchors.json")
+	if err := os.WriteFile(emptyPath, []byte(`{"roots":{},"freshness":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := realMain([]string{
+		"--index", indexPath,
+		"--anchors-file", emptyPath,
+		"--state", filepath.Join(dir, "state2.json"),
+		"--out", filepath.Join(dir, "out2.json"),
+		"--require-root",
+	}); code != exitFail {
+		t.Fatalf("realMain with empty anchors exited %d, want %d", code, exitFail)
+	}
+	if _, err := loadAnchorsFile(emptyPath); err == nil {
+		t.Fatalf("empty anchors file loaded as valid — fail-closed violated")
+	} else if got := errCode(err); got != "ERR_TRUST_ANCHORS_UNAVAILABLE" {
+		t.Fatalf("empty anchors: got code %q, want ERR_TRUST_ANCHORS_UNAVAILABLE", got)
 	}
 }
