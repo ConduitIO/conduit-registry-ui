@@ -24,10 +24,12 @@
  *     pinned identity, and checked that the provenance subject digest binds
  *     to the sha256 the index declares. The badge renders that verdict:
  *     pass / fail(reason) / not_attempted(reason).
- *   - what did NOT run: the site never downloads the connector binaries, so
- *     the badges vouch for the bytes the INDEX declares, not the bytes a
- *     download serves you today. Real verification of the actual file you
- *     install happens at install time, in the CLI, against the same anchors.
+ *   - what did NOT run: the site never downloads the artifact binaries
+ *     (connector or processor — WS4 S5 covers processors with the same
+ *     verdicts), so the badges vouch for the bytes the INDEX declares, not
+ *     the bytes a download serves you today. Real verification of the actual
+ *     file you install happens at install time, in the CLI, against the same
+ *     anchors.
  *
  * The /verify page (src/pages/verify.astro) is the full, human-readable
  * record: what was verified, how, when (as-of dates), and what the verdicts
@@ -41,9 +43,10 @@ export const SIGNATURE_NOTE_ID = 'signature-note';
   verifies the signed index itself (root signature, rollback floor, 7-day staleness window) and then
   verifies every version&rsquo;s signature and SLSA provenance bundles against the trust anchors,
   the publisher&rsquo;s pinned identity, and the index-declared sha256 &mdash; pass, fail, or not
-  attempted, each with a reason. What this site still does not do: it never downloads the connector
-  binaries, so the badges vouch for the bytes the index declares, not the bytes a download serves
-  you today. That check happens when you run <code>conduit connectors install &lt;name&gt;</code>,
+  attempted, each with a reason. What this site still does not do: it never downloads the artifact
+  binaries (connector or processor), so the badges vouch for the bytes the index declares, not the
+  bytes a download serves you today. That check happens when you run
+  <code>conduit connectors install &lt;name&gt;</code> (or <code>conduit processors install</code>),
   which verifies the actual bytes against the same anchors before installing anything. Full details:
   the
   <a href="/verify/">verification report</a>.

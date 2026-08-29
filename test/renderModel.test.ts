@@ -169,15 +169,14 @@ describe('buildRenderModel — per-version verdicts (WS4 S3)', () => {
     const model = buildRenderModel(payload, { verified: true });
     for (const c of model.connectors) {
       for (const v of c.versions) {
+        // The revoked publisher's versions are NOT part of this rule: the
+        // revocation overlay turns them into a fail with the revocation
+        // reason (a verified signature under a revoked identity is a trust
+        // failure, not an abstention — covered by the dedicated tests
+        // below).
+        if (c.name === 'example-vector-sink') continue;
         expect(v.verdict).toBe('not_attempted');
-        // The revoked publisher's versions carry the revocation overlay
-        // reason instead of the missing-report reason — both are explicit,
-        // neither is a pass.
-        if (c.name === 'example-vector-sink') {
-          expect(v.verdictReason).toMatch(/revoked/);
-        } else {
-          expect(v.verdictReason).toMatch(/no verdict/);
-        }
+        expect(v.verdictReason).toMatch(/no verdict/);
       }
     }
   });
@@ -307,7 +306,12 @@ describe('buildRenderModel — processors (WS4 S5: rendered with the same verdic
           {
             name: 'ai.chunk',
             versions: [
-              { version: '0.1.0', verdict: 'pass', checkedAt: '2026-08-29T12:00:00Z', artifacts: [] },
+              {
+                version: '0.1.0',
+                verdict: 'pass',
+                checkedAt: '2026-08-29T12:00:00Z',
+                artifacts: [],
+              },
             ],
           },
         ],

@@ -29,6 +29,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,13 +38,17 @@ import (
 	"github.com/conduitio/conduit/pkg/registry/index"
 	"github.com/conduitio/conduit/pkg/registry/trust"
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
-	"strings"
 )
 
 const (
 	testIssuer          = "https://token.actions.githubusercontent.com"
 	testIdentityPattern = `^https://github\.com/ConduitIO/conduit-connector-postgres/\.github/workflows/publish\.yml@refs/tags/v.*$`
 	testSigningIdentity = "https://github.com/ConduitIO/conduit-connector-postgres/.github/workflows/publish.yml@refs/tags/v0.14.1"
+	// WS4 S5: processors pin the same GitHub-workflow identity shape (design
+	// doc D1) — the processor pages' badges are the same three-state trust
+	// decision, not a softer tier.
+	processorIdentityPattern = `^https://github\.com/ConduitIO/conduit-processor-ai/\.github/workflows/publish\.yml@refs/tags/v.*$`
+	processorSigningIdentity = "https://github.com/ConduitIO/conduit-processor-ai/.github/workflows/publish.yml@refs/tags/v0.1.0"
 )
 
 // fixtureBundle holds the three real-sigstore fixture pieces for one
@@ -150,6 +156,39 @@ func runVerdicts(t *testing.T, payload index.Payload, ss *ca.VirtualSigstore, no
 		t.Fatalf("verifyArtifacts: %v", err)
 	}
 	return report
+}
+
+func processorVersionOf(t *testing.T, report artifactsReport, processor, version string) versionVerdict {
+	t.Helper()
+	for _, p := range report.Processors {
+		if p.Name != processor {
+			continue
+		}
+		for _, v := range p.Versions {
+			if v.Version == version {
+				return v
+			}
+		}
+	}
+	t.Fatalf("no verdict for processor %s@%s in report", processor, version)
+	return versionVerdict{}
+}
+
+func processorPayload(versions ...index.ProcessorVersion) index.Payload {
+	return index.Payload{
+		SchemaVersion: 1,
+		Index:         index.IndexMeta{Version: 42, Timestamp: time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)},
+		Processors: []index.Processor{
+			{
+				Name: "ai.chunk",
+				Publisher: index.Publisher{
+					ExpectedOIDCIssuer:      testIssuer,
+					ExpectedIdentityPattern: processorIdentityPattern,
+				},
+				Versions: versions,
+			},
+		},
+	}
 }
 
 func versionOf(t *testing.T, report artifactsReport, connector, version string) versionVerdict {
@@ -326,15 +365,19 @@ func TestArtifactVerdictsFetchFailureIsNotAttempted(t *testing.T) {
 	if vv.Verdict != verdictNotAttempted {
 		t.Fatalf("expected not_attempted, got %q (%q)", vv.Verdict, vv.Reason)
 	}
-	if !strings.HasPrefix(vv.Reason, reasonSigFetchFailed+": ") {
-		t.Fatalf("unexpected reason %q", vv.Reason)
+	// The reason carries the fixed fetch-phrase suffix — the report contract
+	// is "never raw error text", so the DNS detail stays inside fetchBundle.
+	if !strings.HasSuffix(vv.Reason, bundleErrUnreachable.Error()) {
+		t.Fatalf("reason %q must end with the fixed unreachable phrase", vv.Reason)
 	}
 }
 
 func TestArtifactVerdictsHTTP5xxIsNotAttempted(t *testing.T) {
 	ss, _ := newVirtualCA(t)
 	f := makeFixture(t, ss)
+	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -350,6 +393,75 @@ func TestArtifactVerdictsHTTP5xxIsNotAttempted(t *testing.T) {
 	vv := versionOf(t, report, "conduit-connector-postgres", "0.14.1")
 	if vv.Verdict != verdictNotAttempted {
 		t.Fatalf("expected not_attempted, got %q (%q)", vv.Verdict, vv.Reason)
+	}
+	// Bounded retries: 5xx is transient, so the fetch is attempted
+	// fetchBundleAttempts times — no more, no less — then gives up.
+	if got := requests.Load(); got != fetchBundleAttempts {
+		t.Fatalf("expected %d fetch attempts, got %d", fetchBundleAttempts, got)
+	}
+	if !strings.HasSuffix(vv.Reason, bundleErrServer.Error()) {
+		t.Fatalf("reason %q must end with the fixed server-error phrase", vv.Reason)
+	}
+}
+
+func TestFetchBundleRetriesTransientErrorsAndSucceeds(t *testing.T) {
+	ss, _ := newVirtualCA(t)
+	f := makeFixture(t, ss)
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) <= 2 {
+			http.Error(w, "not now", http.StatusServiceUnavailable)
+			return
+		}
+		w.Write(f.sigBundle)
+	}))
+	defer srv.Close()
+	entry := writeFixture(t, f)
+	entry.Signature.BundleURL = srv.URL
+	payload := connectorPayload(index.ConnectorVersion{
+		Version:           "0.14.1",
+		MinConduitVersion: "0.14.0",
+		Artifacts:         []index.Artifact{entry},
+	})
+
+	report := runVerdicts(t, payload, ss, time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC))
+	vv := versionOf(t, report, "conduit-connector-postgres", "0.14.1")
+	if vv.Verdict != verdictPass {
+		t.Fatalf("expected pass after transient 503s, got %q (%q)", vv.Verdict, vv.Reason)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("expected 3 fetch attempts (2 failures + 1 success), got %d", got)
+	}
+}
+
+func TestFetchBundleDoesNotRetryPermanentErrors(t *testing.T) {
+	ss, _ := newVirtualCA(t)
+	f := makeFixture(t, ss)
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	entry := writeFixture(t, f)
+	entry.Signature.BundleURL = srv.URL
+	payload := connectorPayload(index.ConnectorVersion{
+		Version:           "0.14.1",
+		MinConduitVersion: "0.14.0",
+		Artifacts:         []index.Artifact{entry},
+	})
+
+	report := runVerdicts(t, payload, ss, time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC))
+	vv := versionOf(t, report, "conduit-connector-postgres", "0.14.1")
+	if vv.Verdict != verdictNotAttempted {
+		t.Fatalf("expected not_attempted, got %q (%q)", vv.Verdict, vv.Reason)
+	}
+	// A 404 is permanent — a broken index reference must not burn retries.
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 fetch attempt for a 404, got %d", got)
+	}
+	if !strings.HasSuffix(vv.Reason, bundleErrNotFound.Error()) {
+		t.Fatalf("reason %q must end with the fixed not-found phrase", vv.Reason)
 	}
 }
 
@@ -372,6 +484,9 @@ func TestArtifactVerdictsOversizedBundleIsNotAttempted(t *testing.T) {
 	vv := versionOf(t, report, "conduit-connector-postgres", "0.14.1")
 	if vv.Verdict != verdictNotAttempted {
 		t.Fatalf("expected not_attempted, got %q (%q)", vv.Verdict, vv.Reason)
+	}
+	if !strings.HasSuffix(vv.Reason, bundleErrTooLarge.Error()) {
+		t.Fatalf("reason %q must end with the fixed too-large phrase", vv.Reason)
 	}
 }
 
@@ -509,5 +624,96 @@ func TestArtifactReportShape(t *testing.T) {
 		if v.CheckedAt != "2026-07-14T10:30:00Z" {
 			t.Fatalf("expected checkedAt to be the verdict clock, got %q", v.CheckedAt)
 		}
+	}
+}
+
+// --- processors (WS4 S5: the identical trust code over a single
+// arch-neutral wasip1/wasm artifact, with version-level provenance) ---
+
+func TestArtifactVerdictsProcessorPass(t *testing.T) {
+	ss, _ := newVirtualCA(t)
+	f := makeFixture(t, ss)
+	// A processor version's bundle is signed by the PROCESSOR's pinned
+	// identity (design doc D1) and carries version-level provenance only —
+	// the artifact itself declares none.
+	f.sigBundle = signatureBundleJSON(t, ss, processorSigningIdentity, testIssuer, f.artifact)
+	entry := writeFixture(t, f)
+	entry.OS = "wasip1"
+	entry.Arch = "wasm"
+	entry.Kind = "wasm-processor"
+	entry.SLSAProvenance = nil
+	payload := processorPayload(index.ProcessorVersion{
+		Version:            "0.1.0",
+		MinConduitVersion:  "0.20.0",
+		MinProtocolVersion: "0.14.0",
+		Artifact:           entry,
+		SLSAProvenance: &index.ProvenanceRef{
+			BundleURL:     writeProvBundleFile(t, f),
+			PredicateType: "https://slsa.dev/provenance/v1",
+		},
+	})
+
+	report := runVerdicts(t, payload, ss, time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC))
+	vv := processorVersionOf(t, report, "ai.chunk", "0.1.0")
+	if vv.Verdict != verdictPass {
+		t.Fatalf("expected pass, got %q (%q)", vv.Verdict, vv.Reason)
+	}
+	if len(report.Connectors) != 0 {
+		t.Fatalf("processor-only payload must not fabricate connector entries")
+	}
+}
+
+func TestArtifactVerdictsProcessorIdentityMismatchIsFail(t *testing.T) {
+	ss, _ := newVirtualCA(t)
+	f := makeFixture(t, ss)
+	entry := writeFixture(t, f)
+	entry.OS = "wasip1"
+	entry.Arch = "wasm"
+	entry.Kind = "wasm-processor"
+	entry.SLSAProvenance = nil
+	// Signed by the CONNECTOR's identity — cryptographically valid, wrong
+	// pin for the processor: the trust decision must not care which kind of
+	// entry carries the identity.
+	f.sigBundle = signatureBundleJSON(t, ss, testSigningIdentity, testIssuer, f.artifact)
+	payload := processorPayload(index.ProcessorVersion{
+		Version:            "0.1.0",
+		MinConduitVersion:  "0.20.0",
+		MinProtocolVersion: "0.14.0",
+		Artifact:           entry,
+		SLSAProvenance: &index.ProvenanceRef{
+			BundleURL:     writeProvBundleFile(t, f),
+			PredicateType: "https://slsa.dev/provenance/v1",
+		},
+	})
+
+	report := runVerdicts(t, payload, ss, time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC))
+	vv := processorVersionOf(t, report, "ai.chunk", "0.1.0")
+	if vv.Verdict != verdictFail || vv.Reason != reasonSigIdentityMismatch {
+		t.Fatalf("expected fail(%q), got %q (%q)", reasonSigIdentityMismatch, vv.Verdict, vv.Reason)
+	}
+}
+
+func TestArtifactVerdictsProcessorMissingProvenanceIsNotAttempted(t *testing.T) {
+	ss, _ := newVirtualCA(t)
+	f := makeFixture(t, ss)
+	f.sigBundle = signatureBundleJSON(t, ss, processorSigningIdentity, testIssuer, f.artifact)
+	entry := writeFixture(t, f)
+	entry.OS = "wasip1"
+	entry.Arch = "wasm"
+	entry.Kind = "wasm-processor"
+	entry.SLSAProvenance = nil
+	payload := processorPayload(index.ProcessorVersion{
+		Version:            "0.1.0",
+		MinConduitVersion:  "0.20.0",
+		MinProtocolVersion: "0.14.0",
+		Artifact:           entry,
+		// No provenance anywhere — the honesty floor applies to processors
+		// exactly as to connectors: no provenance, no pass.
+	})
+
+	report := runVerdicts(t, payload, ss, time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC))
+	vv := processorVersionOf(t, report, "ai.chunk", "0.1.0")
+	if vv.Verdict != verdictNotAttempted || vv.Reason != reasonNoProvenance {
+		t.Fatalf("expected not_attempted(%q), got %q (%q)", reasonNoProvenance, vv.Verdict, vv.Reason)
 	}
 }

@@ -211,6 +211,16 @@ describe.skipIf(goMissing)('real verifier CLI against a generated signed fixture
           artifacts: unknown[];
         }[];
       }[];
+      processors: {
+        name: string;
+        versions: {
+          version: string;
+          verdict: string;
+          reason?: string;
+          checkedAt: string;
+          artifacts: unknown[];
+        }[];
+      }[];
     };
     expect(report.schemaVersion).toBe(1);
     expect(report.indexVersion).toBe(42);
@@ -237,6 +247,17 @@ describe.skipIf(goMissing)('real verifier CLI against a generated signed fixture
     const na = verdicts.get('postgres@0.14.2')!;
     expect(na.verdict).toBe('not_attempted');
     expect(na.reason).toBe('no provenance in index');
+
+    // WS4 S5: the processor entries carry the same real-crypto pass verdicts.
+    const processorVerdicts = new Map<string, { verdict: string }>();
+    for (const p of report.processors) {
+      for (const v of p.versions) {
+        processorVerdicts.set(`${p.name}@${v.version}`, v);
+      }
+    }
+    for (const key of ['ai.chunk@0.1.0', 'ai.embed@0.1.0']) {
+      expect(processorVerdicts.get(key)!.verdict).toBe('pass');
+    }
   });
 
   it('does not fail the build when an artifact bundle is unfetchable — the verdict degrades to not_attempted, the site stays up', () => {

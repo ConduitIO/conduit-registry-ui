@@ -116,7 +116,6 @@ describe('verdicts — merge contract against the frozen sample index', () => {
   });
 
   it('without a report at all, every version is not_attempted — never pass', () => {
-    const { payload } = loadSampleIndex();
     const verdict = verdictForVersion(undefined, 'postgres', false, '0.14.1');
     expect(verdict.verdict).toBe('not_attempted');
     expect(verdict.reason).toBe(REASON_NO_VERDICT_IN_REPORT);
@@ -138,7 +137,6 @@ describe('verdicts — merge contract against the frozen sample index', () => {
   });
 
   it('a revoked publisher without a crypto row still renders fail, undated', () => {
-    const { payload } = loadSampleIndex();
     const verdict = verdictForVersion(undefined, 'example-vector-sink', true, '0.3.0');
     expect(verdict.verdict).toBe('fail');
     expect(verdict.reason).toBe(REASON_PUBLISHER_REVOKED);
@@ -158,9 +156,9 @@ describe('verdicts — merge contract against the frozen sample index', () => {
     ];
     const { processors } = mergeVerdicts(report, payload);
     expect(processors.get('ai.chunk')!.get('0.1.0')!.verdict).toBe('pass');
-    expect(
-      verdictForProcessorVersion(processors, 'ai.embed', false, '0.1.0').verdict
-    ).toBe('not_attempted');
+    expect(verdictForProcessorVersion(processors, 'ai.embed', false, '0.1.0').verdict).toBe(
+      'not_attempted'
+    );
     // No processors collection at all → honest not_attempted, never a pass.
     expect(verdictForProcessorVersion(undefined, 'ai.chunk', false, '0.1.0').verdict).toBe(
       'not_attempted'

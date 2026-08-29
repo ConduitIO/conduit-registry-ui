@@ -113,7 +113,12 @@ async function main(): Promise<void> {
 
   // /verify/ carries the three-state verdicts + the verifier report; it is
   // scanned with the connector + processor pages, not just the known routes.
-  const routes = ['/', '/verify/', ...representativeConnectorRoutes(), ...representativeProcessorRoutes()];
+  const routes = [
+    '/',
+    '/verify/',
+    ...representativeConnectorRoutes(),
+    ...representativeProcessorRoutes(),
+  ];
   const server = await startStaticServer(distDir);
   const browser = await chromium.launch();
 

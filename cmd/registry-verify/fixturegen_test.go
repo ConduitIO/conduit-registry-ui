@@ -206,6 +206,39 @@ func rewritePayloadArtifacts(t *testing.T, payload map[string]any, ss *ca.Virtua
 			}
 		}
 	}
+
+	// Processors (WS4 S5): the same rewrite over each processor version's
+	// SINGLE arch-neutral artifact, with version-level provenance only.
+	processors, _ := payload["processors"].([]any)
+	for _, pAny := range processors {
+		p := pAny.(map[string]any)
+		pattern, _ := p["publisher"].(map[string]any)["expectedIdentityPattern"].(string)
+		versions, _ := p["versions"].([]any)
+		for _, vAny := range versions {
+			v := vAny.(map[string]any)
+			version, _ := v["version"].(string)
+			identity := concreteIdentityFromPattern(pattern, version)
+			a := v["artifact"].(map[string]any)
+			osName, _ := a["os"].(string)
+			arch, _ := a["arch"].(string)
+			artifactBytes := []byte(fmt.Sprintf("fixture-artifact-%s-%s-%s-%s", p["name"], version, osName, arch))
+			a["sha256"] = fmt.Sprintf("%x", sha256Sum(artifactBytes))
+			a["size"] = int64(len(artifactBytes))
+			sigPath := filepath.Join(outDir, fmt.Sprintf("sig-%s-%s-%s-%s.json", p["name"], version, osName, arch))
+			if err := os.WriteFile(sigPath, signatureBundleJSON(t, ss, identity, testIssuer, artifactBytes), 0o644); err != nil {
+				t.Fatalf("writing processor signature bundle: %v", err)
+			}
+			a["signature"].(map[string]any)["bundleURL"] = sigPath
+			delete(a["signature"].(map[string]any), "rekorLogIndex")
+			if provRef, hasProv := v["slsaProvenance"].(map[string]any); hasProv {
+				// The processor NAME is part of the file name: distinct
+				// processors can share a version number, and a shared file
+				// would let the second processor's bundle silently overwrite
+				// the first's (a subject the first's digest is not bound to).
+				provRef["bundleURL"] = generateProvisionBundle(t, ss, outDir, fmt.Sprintf("proc-%s-%s", p["name"], version), []string{a["sha256"].(string)})
+			}
+		}
+	}
 }
 
 // generateProvisionBundle writes a provenance bundle signed by the SLSA
@@ -269,6 +302,22 @@ func assertFixtureVerdicts(t *testing.T, artifactsPath string) {
 	}
 	if versionReasons["0.14.2"] != reasonNoProvenance {
 		t.Fatalf("0.14.2: expected reason %q, got %q", reasonNoProvenance, versionReasons["0.14.2"])
+	}
+	// Processors carry the same pass floor (WS4 S5): every well-signed
+	// processor version must come out pass, never not_attempted.
+	processorVerdicts := map[string]artifactVerdict{}
+	for _, p := range report.Processors {
+		for _, v := range p.Versions {
+			processorVerdicts[p.Name+"@"+v.Version] = v.Verdict
+		}
+	}
+	for key, want := range map[string]artifactVerdict{
+		"ai.chunk@0.1.0": verdictPass,
+		"ai.embed@0.1.0": verdictPass,
+	} {
+		if processorVerdicts[key] != want {
+			t.Fatalf("processor %s: expected verdict %q, got %q", key, want, processorVerdicts[key])
+		}
 	}
 }
 

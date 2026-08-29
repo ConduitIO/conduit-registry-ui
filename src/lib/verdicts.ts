@@ -249,13 +249,20 @@ export type InstallGate =
 
 export function installGateFor(args: {
   suppressInstallCommand: boolean;
-  verdict?: ArtifactVerdict;
-  verdictReason?: string;
-  version?: string;
+  // The pages pass the default version's fields through directly, which may
+  // be undefined when no version exists — the input bag explicitly admits
+  // that (exactOptionalPropertyTypes); the gate output never carries it.
+  verdict?: ArtifactVerdict | undefined;
+  verdictReason?: string | undefined;
+  version?: string | undefined;
 }): InstallGate {
   if (args.suppressInstallCommand) return { gate: 'suppress' };
   if (args.verdict === 'fail' && args.version !== undefined) {
-    return { gate: 'fail', version: args.version, ...(args.verdictReason !== undefined ? { reason: args.verdictReason } : {}) };
+    return {
+      gate: 'fail',
+      version: args.version,
+      ...(args.verdictReason !== undefined ? { reason: args.verdictReason } : {}),
+    };
   }
   if (
     args.verdict === 'not_attempted' &&

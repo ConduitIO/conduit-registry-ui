@@ -20,7 +20,6 @@ import {
   verdictForVersion,
   type ArtifactReport,
   type ArtifactVerdict,
-  type VerdictLookup,
 } from './verdicts';
 import { BuildError } from './errors';
 
@@ -208,7 +207,8 @@ export function buildRenderModel(
   const indexAgeMs = Math.max(0, Date.parse(generatedAt) - Date.parse(payload.index.timestamp));
   // The verdict lookups are built ONCE per merge — the loop below reads them
   // for every version of every entry (never rebuilt per version).
-  const verdicts = opts.artifacts !== undefined ? mergeVerdicts(opts.artifacts, payload) : undefined;
+  const verdicts =
+    opts.artifacts !== undefined ? mergeVerdicts(opts.artifacts, payload) : undefined;
   assertUniqueNames(payload.connectors, 'connector');
   assertUniqueNames(payload.processors ?? [], 'processor');
 
@@ -220,12 +220,7 @@ export function buildRenderModel(
 
     const revoked = connector.publisher.revoked !== undefined;
     const versions: RenderedVersion[] = connector.versions.map((v) => {
-      const verdict = verdictForVersion(
-        verdicts?.connectors,
-        connector.name,
-        revoked,
-        v.version
-      );
+      const verdict = verdictForVersion(verdicts?.connectors, connector.name, revoked, v.version);
       return {
         version: v.version,
         ...(v.releasedAt !== undefined ? { releasedAt: v.releasedAt } : {}),

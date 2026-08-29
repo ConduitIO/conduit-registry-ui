@@ -14,7 +14,10 @@ import { loadRenderModel } from '../lib/loadRenderModel';
 
 const model = loadRenderModel();
 const date = (iso?: string) => (iso ? new Date(iso).toISOString() : undefined);
-const firstCheckedAt = model.connectors
+// The per-version verdicts of BOTH collections carry the same checkedAt
+// semantics (WS4 S5: processors are the same trust decision, not a second
+// tier) — the "checked at" record scans both.
+const firstCheckedAt = [...model.connectors, ...model.processors]
   .flatMap((c) => c.versions)
   .find((v) => v.verdictCheckedAt)?.verdictCheckedAt;
 ---
@@ -122,6 +125,33 @@ const firstCheckedAt = model.connectors
           </li>
         ))
       }
+      {
+        // Processors (WS4 S5): the identical verdict record for the
+        // processors section — the /verify page reports every badge the site
+        // renders, and processor badges are the same three states.
+        model.processors.map((p) => (
+          <li data-processor-name={p.name}>
+            <h3>
+              {p.displayName} <code>{p.name}</code>{' '}
+              <EffectiveStatusTag status={p.effectiveStatus} />
+            </h3>
+            <ul>
+              {p.versions.map((v) => (
+                <li>
+                  <code>{v.version}</code>{' '}
+                  <VerifiedBadge
+                    verdict={v.verdict}
+                    {...(v.verdictReason !== undefined ? { reason: v.verdictReason } : {})}
+                    {...(v.verdictCheckedAt !== undefined ? { checkedAt: v.verdictCheckedAt } : {})}
+                    descriptionId={SIGNATURE_NOTE_ID}
+                  />
+                  {v.verdictReason && <span class="verdict-reason"> {v.verdictReason}</span>}
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))
+      }
     </ul>
   </section>
 
@@ -143,9 +173,10 @@ const firstCheckedAt = model.connectors
         fails — this site never serves a stale index.
       </li>
       <li>
-        <strong>Not a check of revoked identities.</strong> A revoked publisher&rsquo;s versions render
-        as not attempted — a verifying signature under a revoked identity does not establish trust — and
-        revocation is flagged loudly on the connector page.
+        <strong>Not a check of revoked identities.</strong> A revoked publisher&rsquo;s versions always
+        render <strong>fail</strong> with the revocation reason — a verifying signature under a revoked
+        identity is a trust failure, not an abstention — and revocation is flagged loudly on the connector
+        and processor pages.
       </li>
     </ul>
   </section>

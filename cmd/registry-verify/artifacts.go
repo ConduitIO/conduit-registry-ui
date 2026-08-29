@@ -53,6 +53,9 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
+	"io"
+	"net/http"
 	"os"
 	"runtime/debug"
 	"strings"
@@ -61,7 +64,6 @@ import (
 	"github.com/conduitio/conduit/pkg/foundation/cerrors"
 	"github.com/conduitio/conduit/pkg/foundation/cerrors/conduiterr"
 	"github.com/conduitio/conduit/pkg/registry"
-	"github.com/conduitio/conduit/pkg/registry/boundedfetch"
 	"github.com/conduitio/conduit/pkg/registry/index"
 	"github.com/conduitio/conduit/pkg/registry/trust"
 	in_toto "github.com/in-toto/attestation/go/v1"
@@ -115,7 +117,7 @@ type versionVerdict struct {
 	Artifacts []artifactVerdictEntry `json:"artifacts"`
 }
 
-type connectorVerdict struct {
+type entryVerdict struct {
 	Name     string           `json:"name"`
 	Versions []versionVerdict `json:"versions"`
 }
@@ -125,12 +127,17 @@ type connectorVerdict struct {
 // /verify page render indexVersion/indexTimestamp/verifierVersion as the
 // "when and with what this was checked" record (WS4 4.14/4.16).
 type artifactsReport struct {
-	SchemaVersion   int                `json:"schemaVersion"`
-	GeneratedAt     string             `json:"generatedAt"`
-	IndexVersion    int64              `json:"indexVersion"`
-	IndexTimestamp  string             `json:"indexTimestamp"`
-	VerifierVersion string             `json:"verifierVersion"`
-	Connectors      []connectorVerdict `json:"connectors"`
+	SchemaVersion   int            `json:"schemaVersion"`
+	GeneratedAt     string         `json:"generatedAt"`
+	IndexVersion    int64          `json:"indexVersion"`
+	IndexTimestamp  string         `json:"indexTimestamp"`
+	VerifierVersion string         `json:"verifierVersion"`
+	Connectors      []entryVerdict `json:"connectors"`
+	// Processors carry the identical trust code and verdict semantics (WS4
+	// S5): a processor version's single arch-neutral artifact goes through
+	// the same bundle verification and binding checks. Omitted when the
+	// index declares none (the site's TS side treats the field as optional).
+	Processors []entryVerdict `json:"processors,omitempty"`
 }
 
 // artifactsOptions carries the trust-root seam and clock. trustRoot nil
@@ -179,32 +186,53 @@ func verifyArtifacts(ctx context.Context, payload index.Payload, opts artifactsO
 		IndexVersion:    payload.Index.Version,
 		IndexTimestamp:  payload.Index.Timestamp.UTC().Format(time.RFC3339),
 		VerifierVersion: verifierVersion(),
-		Connectors:      make([]connectorVerdict, 0, len(payload.Connectors)),
+		Connectors:      make([]entryVerdict, 0, len(payload.Connectors)),
 	}
 
 	for _, c := range payload.Connectors {
-		cv := connectorVerdict{Name: c.Name, Versions: make([]versionVerdict, 0, len(c.Versions))}
+		cv := entryVerdict{Name: c.Name, Versions: make([]versionVerdict, 0, len(c.Versions))}
 		identity := trust.PinnedIdentity{
 			OIDCIssuer:      c.Publisher.ExpectedOIDCIssuer,
 			IdentityPattern: c.Publisher.ExpectedIdentityPattern,
 		}
 		for _, v := range c.Versions {
-			cv.Versions = append(cv.Versions, verdictForVersion(ctx, v, identity, opts))
+			cv.Versions = append(cv.Versions, verdictForVersion(ctx, v.Version, v.Artifacts, v.SLSAProvenance, identity, opts))
 		}
 		report.Connectors = append(report.Connectors, cv)
+	}
+
+	// Processors: the same identity-pinning trust decision as connectors
+	// (design doc D1) over a single arch-neutral wasip1/wasm artifact per
+	// version (D2) — the exact bundle verification, the exact binding, the
+	// exact three-state honesty floor.
+	report.Processors = make([]entryVerdict, 0, len(payload.Processors))
+	for _, p := range payload.Processors {
+		pv := entryVerdict{Name: p.Name, Versions: make([]versionVerdict, 0, len(p.Versions))}
+		identity := trust.PinnedIdentity{
+			OIDCIssuer:      p.Publisher.ExpectedOIDCIssuer,
+			IdentityPattern: p.Publisher.ExpectedIdentityPattern,
+		}
+		for _, v := range p.Versions {
+			pv.Versions = append(pv.Versions, verdictForVersion(ctx, v.Version, []index.Artifact{v.Artifact}, v.SLSAProvenance, identity, opts))
+		}
+		report.Processors = append(report.Processors, pv)
 	}
 	return report, nil
 }
 
 // verdictForVersion verifies every artifact of one version and aggregates.
-func verdictForVersion(ctx context.Context, v index.ConnectorVersion, identity trust.PinnedIdentity, opts artifactsOptions) versionVerdict {
+// versionProv is the version-level provenance reference (the fallback the
+// CLI's own artifact-ref selection applies when an artifact declares none);
+// artifacts is the version's per-(os,arch) artifact list — for processors,
+// the single wasip1/wasm artifact.
+func verdictForVersion(ctx context.Context, version string, artifacts []index.Artifact, versionProv *index.ProvenanceRef, identity trust.PinnedIdentity, opts artifactsOptions) versionVerdict {
 	vv := versionVerdict{
-		Version:   v.Version,
+		Version:   version,
 		CheckedAt: opts.now().UTC().Format(time.RFC3339),
-		Artifacts: make([]artifactVerdictEntry, 0, len(v.Artifacts)),
+		Artifacts: make([]artifactVerdictEntry, 0, len(artifacts)),
 	}
 
-	if len(v.Artifacts) == 0 {
+	if len(artifacts) == 0 {
 		vv.Verdict = verdictNotAttempted
 		vv.Reason = reasonNoArtifacts
 		return vv
@@ -216,8 +244,8 @@ func verdictForVersion(ctx context.Context, v index.ConnectorVersion, identity t
 	versionFail := false
 	versionNA := false
 
-	for _, a := range v.Artifacts {
-		entry := verifyArtifact(ctx, a, v, identity, opts)
+	for _, a := range artifacts {
+		entry := verifyArtifact(ctx, a, versionProv, identity, opts)
 		vv.Artifacts = append(vv.Artifacts, entry)
 		switch entry.Verdict {
 		case verdictFail:
@@ -253,11 +281,11 @@ func verdictForVersion(ctx context.Context, v index.ConnectorVersion, identity t
 //     -> not_attempted, verification failure -> fail (tampered bytes) or
 //     fail (valid but wrong identity);
 //  3. provenance (artifact-level else version-level, mirroring
-//     registry.fetchArtifactRef): missing -> not_attempted("no provenance
-//     in index") — NEVER a presence-pass — fetch failure -> not_attempted,
-//     envelope verification failure -> fail, subject/builder binding
-//     failure -> fail.
-func verifyArtifact(ctx context.Context, a index.Artifact, v index.ConnectorVersion, identity trust.PinnedIdentity, opts artifactsOptions) artifactVerdictEntry {
+//     registry.fetchArtifactRef; versionProv is the version-level ref):
+//     missing -> not_attempted("no provenance in index") — NEVER a
+//     presence-pass — fetch failure -> not_attempted, envelope verification
+//     failure -> fail, subject/builder binding failure -> fail.
+func verifyArtifact(ctx context.Context, a index.Artifact, versionProv *index.ProvenanceRef, identity trust.PinnedIdentity, opts artifactsOptions) artifactVerdictEntry {
 	entry := artifactVerdictEntry{OS: a.OS, Arch: a.Arch, Kind: a.Kind, Verdict: verdictFail}
 
 	digest, ok := decodeDigest(a.SHA256)
@@ -298,7 +326,7 @@ func verifyArtifact(ctx context.Context, a index.Artifact, v index.ConnectorVers
 	// --- provenance bundle -------------------------------------------------
 	provRef := a.SLSAProvenance
 	if provRef == nil {
-		provRef = v.SLSAProvenance
+		provRef = versionProv
 	}
 	if provRef == nil {
 		entry.Verdict = verdictNotAttempted
@@ -354,21 +382,107 @@ func reasonForVerifyError(err error, genericReason, identityReason string) strin
 	return genericReason
 }
 
-// fetchBundle fetches one bundle, bounded at the CLI's own 1 MiB cap. An
-// http(s) URL goes through the pinned module's boundedfetch (the exact
-// fetch install.go uses); a local path (offline/test fixtures) is read
-// from disk with the same cap. The returned error string is short and
-// already human-readable (boundedfetch's own messages).
+// Fetch failures map onto a fixed phrase vocabulary — the report's reason
+// strings are part of its contract ("never raw error text": no URLs, no
+// status lines, no DNS detail leaks into the site). Each phrase is also an
+// error sentinel so the retry logic can tell a transient host response from
+// a permanent outcome without string matching.
+var (
+	bundleErrUnreachable = cerrors.New("bundle host could not be reached")
+	bundleErrNotFound    = cerrors.New("bundle not found at the declared URL")
+	bundleErrRateLimited = cerrors.New("bundle host rate-limited the request")
+	bundleErrRejected    = cerrors.New("bundle host rejected the request")
+	bundleErrServer      = cerrors.New("bundle host returned a server error")
+	bundleErrTooLarge    = cerrors.New("bundle exceeds the maximum allowed size")
+	bundleErrUnreadable  = cerrors.New("bundle file could not be read")
+)
+
+// fetchBundle fetches one bundle, bounded at the CLI's own 1 MiB cap
+// (registry.MaxBundleBytes), using the same LimitReader-plus-one technique
+// as the pinned module's boundedfetch — the exact bound install.go
+// enforces. An http(s) URL is fetched with bounded retries on transient
+// 429/5xx responses: a bundle-host hiccup must degrade a verdict to
+// not_attempted only after the retries are exhausted, never on the first
+// 503. A local path (offline/test fixtures) is read from disk with the same
+// cap.
+//
+// Every returned error's message is exactly one of the bundleErr* phrases
+// above; the raw error stays inside this function.
 func fetchBundle(ctx context.Context, url string) ([]byte, error) {
 	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
-		return boundedfetch.Fetch(ctx, url, registry.MaxBundleBytes)
+		return fetchBundleHTTP(ctx, url)
 	}
 	data, err := os.ReadFile(url)
 	if err != nil {
-		return nil, err
+		return nil, bundleErrUnreadable
 	}
 	if int64(len(data)) > registry.MaxBundleBytes {
-		return nil, cerrors.Errorf("%w: bundle exceeds the maximum allowed size", boundedfetch.ErrTooLarge)
+		return nil, bundleErrTooLarge
+	}
+	return data, nil
+}
+
+// fetchBundleAttempts bounds the total HTTP attempts (1 + retries);
+// fetchBundleBackoff doubles per retry (100ms, 200ms — deliberately small:
+// the whole artifacts pass runs inside the CLI's 30s context).
+const (
+	fetchBundleAttempts = 3
+	fetchBundleBackoff  = 100 * time.Millisecond
+)
+
+func fetchBundleHTTP(ctx context.Context, url string) ([]byte, error) {
+	var lastErr error
+	for attempt := 1; attempt <= fetchBundleAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-time.After(fetchBundleBackoff * time.Duration(1<<(attempt-2))):
+			case <-ctx.Done():
+				return nil, bundleErrUnreachable
+			}
+		}
+		data, err := fetchBundleHTTPOnce(ctx, url)
+		if err == nil {
+			return data, nil
+		}
+		// Only transient host responses are retried; a client error (404,
+		// a malformed URL, a too-large body) is permanent and returns
+		// immediately.
+		if !errors.Is(err, bundleErrRateLimited) && !errors.Is(err, bundleErrServer) {
+			return nil, err
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func fetchBundleHTTPOnce(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return nil, bundleErrUnreachable
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, bundleErrUnreachable
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return nil, bundleErrRateLimited
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, bundleErrNotFound
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		return nil, bundleErrRejected
+	case resp.StatusCode < 200 || resp.StatusCode >= 300:
+		return nil, bundleErrServer
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, registry.MaxBundleBytes+1))
+	if err != nil {
+		return nil, bundleErrUnreachable
+	}
+	if int64(len(data)) > registry.MaxBundleBytes {
+		return nil, bundleErrTooLarge
 	}
 	return data, nil
 }
