@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,8 @@ let bin: string | undefined;
 let goMissing = false;
 let fixtureIndex = '';
 let fixtureAnchors = '';
+let fixtureTrustRoot = '';
+let fixtureArtifacts = '';
 
 beforeAll(() => {
   bin = process.env['REGISTRY_VERIFY_BIN'];
@@ -48,6 +50,8 @@ beforeAll(() => {
   }
   fixtureIndex = path.join(tmp, 'signed-index.json');
   fixtureAnchors = path.join(tmp, 'anchors.json');
+  fixtureTrustRoot = path.join(tmp, 'trust-root.json');
+  fixtureArtifacts = path.join(tmp, 'artifacts.json');
   const gen = spawnSync(
     'go',
     ['test', './cmd/registry-verify', '-run', '^TestGenerateSignedFixture$', '-count=1'],
@@ -76,6 +80,11 @@ function runViaCli(statePath: string, outPath: string): () => Buffer {
     verifyIndexViaCli({
       indexURL: fixtureIndex,
       anchorsFile: fixtureAnchors,
+      // The generated fixture carries REAL sigstore bundles signed by a
+      // VirtualSigstore CA; the artifacts pass needs that CA's trust root
+      // (--trust-root-file) to verify them offline.
+      artifactsOut: fixtureArtifacts,
+      trustRootFile: fixtureTrustRoot,
       statePath,
       outPath,
       cwd: root,
@@ -179,5 +188,107 @@ describe.skipIf(goMissing)('real verifier CLI against a generated signed fixture
         }),
       'ERR_INDEX_UNREACHABLE'
     );
+  });
+
+  it('writes the artifacts report with real crypto verdicts: well-signed versions pass, the provenance-less 0.14.2 is not_attempted("no provenance in index")', () => {
+    const statePath = path.join(tmp, 'state-artifacts.json');
+    const outPath = path.join(tmp, 'out-artifacts.json');
+    runViaCli(statePath, outPath)();
+
+    const report = JSON.parse(readFileSync(fixtureArtifacts, 'utf-8')) as {
+      schemaVersion: number;
+      generatedAt: string;
+      indexVersion: number;
+      indexTimestamp: string;
+      verifierVersion: string;
+      connectors: {
+        name: string;
+        versions: {
+          version: string;
+          verdict: string;
+          reason?: string;
+          checkedAt: string;
+          artifacts: unknown[];
+        }[];
+      }[];
+    };
+    expect(report.schemaVersion).toBe(1);
+    expect(report.indexVersion).toBe(42);
+    // The generator stamps `now` onto the payload before signing, so the
+    // report must describe the SAME stamped timestamp the signed index
+    // carries — the coherence guard's data.
+    const fixturePayload = JSON.parse(readFileSync(fixtureIndex, 'utf-8')) as {
+      payload: { index: { timestamp: string } };
+    };
+    expect(report.indexTimestamp).toBe(fixturePayload.payload.index.timestamp);
+    expect(report.verifierVersion).toMatch(/^v0\.20\.0-nightly/);
+    expect(report.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    const verdicts = new Map<string, { verdict: string; reason?: string; checkedAt: string }>();
+    for (const c of report.connectors) {
+      for (const v of c.versions) {
+        verdicts.set(`${c.name}@${v.version}`, v);
+        expect(v.checkedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      }
+    }
+    for (const key of ['postgres@0.14.0', 'postgres@0.14.1', 'example-vector-sink@0.3.0']) {
+      expect(verdicts.get(key)!.verdict).toBe('pass');
+    }
+    const na = verdicts.get('postgres@0.14.2')!;
+    expect(na.verdict).toBe('not_attempted');
+    expect(na.reason).toBe('no provenance in index');
+  });
+
+  it('does not fail the build when an artifact bundle is unfetchable — the verdict degrades to not_attempted, the site stays up', () => {
+    // A second, self-contained fixture: delete one signature bundle file
+    // AFTER generation, so the signed index is intact (its root signature
+    // still verifies) but one bundle ref points at a missing file. The
+    // artifacts pass must record not_attempted and exit 0 — a bundle-host
+    // outage degrades badges, never the site.
+    const dir = mkdtempSync(path.join(tmpdir(), 'registry-verify-cli-unfetchable-'));
+    const gen = spawnSync(
+      'go',
+      ['test', './cmd/registry-verify', '-run', '^TestGenerateSignedFixture$', '-count=1'],
+      {
+        cwd: root,
+        env: { ...process.env, FIXTURE_OUT_DIR: dir },
+        encoding: 'utf8',
+        timeout: 300_000,
+      }
+    );
+    if (gen.status !== 0) {
+      throw new Error(`could not generate the unfetchable-bundle fixture: ${gen.stderr}`);
+    }
+    rmSync(path.join(dir, 'sig-postgres-0.14.0-linux-amd64.json'));
+
+    const statePath = path.join(tmp, 'state-unfetchable.json');
+    const outPath = path.join(tmp, 'out-unfetchable.json');
+    const artifactsOut = path.join(tmp, 'artifacts-unfetchable.json');
+    verifyIndexViaCli({
+      indexURL: path.join(dir, 'signed-index.json'),
+      anchorsFile: path.join(dir, 'anchors.json'),
+      artifactsOut,
+      trustRootFile: path.join(dir, 'trust-root.json'),
+      statePath,
+      outPath,
+      cwd: root,
+      env: { ...process.env, GITHUB_ACTIONS: undefined, REGISTRY_VERIFY_BIN: bin! },
+    });
+
+    const report = JSON.parse(readFileSync(artifactsOut, 'utf-8')) as {
+      connectors: {
+        name: string;
+        versions: { version: string; verdict: string; reason?: string }[];
+      }[];
+    };
+    const postgres = report.connectors.find((c) => c.name === 'postgres')!.versions;
+    const v0140 = postgres.find((v) => v.version === '0.14.0')!;
+    expect(v0140.verdict).toBe('not_attempted');
+    expect(v0140.reason).toContain('could not be fetched');
+    // The OTHER artifact of the same version still verified — but the
+    // version aggregates fail > not_attempted > pass, so the version is
+    // not_attempted, not pass.
+    const v0141 = postgres.find((v) => v.version === '0.14.1')!;
+    expect(v0141.verdict).toBe('pass');
   });
 });

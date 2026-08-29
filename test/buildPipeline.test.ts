@@ -105,6 +105,35 @@ describe('verifyViaCli — invocation contract', () => {
     expect(recorder.args).not.toContain('--index');
   });
 
+  it('passes --artifacts always when configured, and --trust-root-file only when configured', () => {
+    const recorder: { args: string[] } = { args: [] };
+    verifyIndexViaCli({
+      artifactsOut: '/tmp/artifacts.json',
+      trustRootFile: '/tmp/trust-root.json',
+      statePath: tmpState,
+      outPath: tmpOut,
+      cwd: CWD,
+      env: { GITHUB_ACTIONS: undefined },
+      spawn: successSpawn(recorder),
+    });
+    expect(recorder.args).toContain('--artifacts');
+    expect(recorder.args).toContain('/tmp/artifacts.json');
+    expect(recorder.args).toContain('--trust-root-file');
+    expect(recorder.args).toContain('/tmp/trust-root.json');
+  });
+
+  it('omits --artifacts and --trust-root-file when not configured', () => {
+    const recorder: { args: string[] } = { args: [] };
+    verifyIndexViaCli({
+      statePath: tmpState,
+      outPath: tmpOut,
+      cwd: CWD,
+      spawn: successSpawn(recorder),
+    });
+    expect(recorder.args).not.toContain('--artifacts');
+    expect(recorder.args).not.toContain('--trust-root-file');
+  });
+
   it('resolves REGISTRY_VERIFY_BIN to a direct binary, otherwise go run', () => {
     expect(resolveVerifierCmd({ REGISTRY_VERIFY_BIN: '/tmp/registry-verify' })).toEqual({
       cmd: '/tmp/registry-verify',
@@ -166,6 +195,19 @@ describe('verifyViaCli — fail-closed contract', () => {
       {
         indexURL: 'https://example.test/index.json',
         anchorsFile: '/tmp/anchors.json',
+        statePath: tmpState,
+        outPath: tmpOut,
+        cwd: CWD,
+      },
+      {
+        trustRootFile: '/tmp/trust-root.json',
+        statePath: tmpState,
+        outPath: tmpOut,
+        cwd: CWD,
+      },
+      {
+        indexURL: 'https://example.test/index.json',
+        trustRootFile: '/tmp/trust-root.json',
         statePath: tmpState,
         outPath: tmpOut,
         cwd: CWD,
@@ -245,5 +287,27 @@ describe('pipeline — verified payload through the render model', () => {
     const postgres = model.connectors.find((c) => c.name === 'postgres');
     expect(postgres).toBeDefined();
     expect(postgres!.displayName).toBe('PostgreSQL');
+  });
+
+  it('fails the build when the artifacts report describes a different index run', () => {
+    const signed = loadSampleIndex();
+    let caught: BuildError | undefined;
+    try {
+      buildRenderModel(signed.payload, {
+        verified: true,
+        artifacts: {
+          schemaVersion: 1,
+          generatedAt: '2026-08-29T12:00:00Z',
+          indexVersion: 41, // the payload's index.version is 42
+          indexTimestamp: signed.payload.index.timestamp,
+          verifierVersion: 'v0.20.0-nightly',
+          connectors: [],
+        },
+      });
+    } catch (err) {
+      caught = err as BuildError;
+    }
+    expect(caught).toBeInstanceOf(BuildError);
+    expect(caught!.code).toBe('ERR_ARTIFACTS_REPORT_MISMATCH');
   });
 });

@@ -93,6 +93,39 @@
               "predicateType": "https://slsa.dev/provenance/v1"
             },
             "deprecated": false
+          },
+          {
+            "version": "0.14.2",
+            "releasedAt": "2026-07-02T18:00:00Z",
+            "minConduitVersion": "0.14.0",
+            "minProtocolVersion": "0.14.0",
+            "artifacts": [
+              {
+                "os": "linux",
+                "arch": "amd64",
+                "kind": "standalone",
+                "url": "https://conduit.gateway.scarf.sh/conduitio/conduit-connector-postgres/releases/download/v0.14.2/conduit-connector-postgres_0.14.2_linux_amd64.tar.gz",
+                "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "size": 14331500,
+                "signature": {
+                  "bundleURL": "https://conduit.gateway.scarf.sh/conduitio/conduit-connector-postgres/releases/download/v0.14.2/conduit-connector-postgres_0.14.2_linux_amd64.tar.gz.sigstore.json",
+                  "rekorLogIndex": 118501274
+                }
+              },
+              {
+                "os": "darwin",
+                "arch": "arm64",
+                "kind": "standalone",
+                "url": "https://conduit.gateway.scarf.sh/conduitio/conduit-connector-postgres/releases/download/v0.14.2/conduit-connector-postgres_0.14.2_darwin_arm64.tar.gz",
+                "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "size": 14331500,
+                "signature": {
+                  "bundleURL": "https://conduit.gateway.scarf.sh/conduitio/conduit-connector-postgres/releases/download/v0.14.2/conduit-connector-postgres_0.14.2_darwin_arm64.tar.gz.sigstore.json",
+                  "rekorLogIndex": 118501274
+                }
+              }
+            ],
+            "deprecated": false
           }
         ]
       },
