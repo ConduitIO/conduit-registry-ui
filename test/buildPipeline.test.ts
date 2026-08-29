@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { verifyIndexViaCli, resolveVerifierCmd } from '../src/lib/verifyViaCli';
+import {
+  verifyIndexViaCli,
+  resolveVerifierCmd,
+  type VerifyCliOptions,
+} from '../src/lib/verifyViaCli';
 import { buildRenderModel } from '../src/lib/renderModel';
 import { BuildError } from '../src/lib/errors';
 import { loadSampleIndex } from './fixtures/loadFixture';
@@ -79,6 +83,9 @@ describe('verifyViaCli — invocation contract', () => {
       statePath: tmpState,
       outPath: tmpOut,
       cwd: CWD,
+      // The guard test below covers the CI refusal; here the guard must not
+      // fire so the arg-forwarding contract is what's under test.
+      env: { GITHUB_ACTIONS: undefined },
       spawn: successSpawn(recorder),
     });
     expect(recorder.args).toContain('--index');
@@ -126,6 +133,75 @@ describe('verifyViaCli — fail-closed contract', () => {
     expect(caught).toBeInstanceOf(BuildError);
     expect(caught!.code).toBe('ERR_INDEX_STALE');
     expect(caught!.message).toContain('7 days');
+  });
+
+  it('makes a stale index actionable at the failure point: re-sign, do not re-run CI', () => {
+    const stderr = 'registry-verify: ERR_INDEX_STALE: index.timestamp (...) exceeds max staleness';
+    let caught: BuildError | undefined;
+    try {
+      verifyIndexViaCli({
+        statePath: tmpState,
+        outPath: tmpOut,
+        cwd: CWD,
+        spawn: failingSpawn(stderr),
+      });
+    } catch (err) {
+      caught = err as BuildError;
+    }
+    expect(caught!.code).toBe('ERR_INDEX_STALE');
+    expect(caught!.message).toContain('Recovery:');
+    expect(caught!.message).toContain('Re-sign/publish a fresh index');
+    expect(caught!.message).toContain('Do NOT re-run CI');
+  });
+
+  it('refuses the trust-bypass knobs in a GitHub Actions build (ERR_BUILD_CONFIG)', () => {
+    const cases: VerifyCliOptions[] = [
+      {
+        indexURL: 'https://example.test/index.json',
+        statePath: tmpState,
+        outPath: tmpOut,
+        cwd: CWD,
+      },
+      { anchorsFile: '/tmp/anchors.json', statePath: tmpState, outPath: tmpOut, cwd: CWD },
+      {
+        indexURL: 'https://example.test/index.json',
+        anchorsFile: '/tmp/anchors.json',
+        statePath: tmpState,
+        outPath: tmpOut,
+        cwd: CWD,
+      },
+    ];
+    for (const opts of cases) {
+      let caught: BuildError | undefined;
+      try {
+        verifyIndexViaCli({
+          ...opts,
+          env: { GITHUB_ACTIONS: 'true' },
+          spawn: () => {
+            throw new Error('CLI must not be spawned when CI refuses the knobs');
+          },
+        });
+      } catch (err) {
+        caught = err as BuildError;
+      }
+      expect(caught, `case: ${JSON.stringify(opts)}`).toBeInstanceOf(BuildError);
+      expect(caught!.code, `case: ${JSON.stringify(opts)}`).toBe('ERR_BUILD_CONFIG');
+      expect(caught!.message, `case: ${JSON.stringify(opts)}`).toContain('CI refuses');
+    }
+  });
+
+  it('still allows the trust-bypass knobs outside CI (local/offline builds)', () => {
+    const recorder: { args: string[] } = { args: [] };
+    verifyIndexViaCli({
+      indexURL: 'https://example.test/index.json',
+      statePath: tmpState,
+      outPath: tmpOut,
+      cwd: CWD,
+      env: { GITHUB_ACTIONS: undefined },
+      spawn: successSpawn(recorder),
+    });
+    expect(recorder.args).toContain('--index');
+    expect(recorder.args).toContain('https://example.test/index.json');
   });
 
   it('falls back to ERR_VERIFY when the CLI exits non-zero without a code', () => {

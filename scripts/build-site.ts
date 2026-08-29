@@ -39,12 +39,16 @@
  *   REGISTRY_INDEX_URL          --index to pass the CLI (URL or local path);
  *                                unset = the CLI's default, the LIVE index
  *                                at registry.conduitdata.io/index.json.
+ *                                REFUSED in GitHub Actions (ERR_BUILD_CONFIG):
+ *                                CI must verify the live index.
  *   REGISTRY_VERIFY_BIN         path to a prebuilt registry-verify binary;
  *                                unset = `go run ./cmd/registry-verify`
  *                                (requires Go — used for local dev).
  *   REGISTRY_VERIFY_ANCHORS_FILE  --anchors-file to pass the CLI; the
- *                                test/offline anchors facility. Production CI
- *                                must never set this.
+ *                                test/offline anchors facility. REFUSED in
+ *                                GitHub Actions (ERR_BUILD_CONFIG), same
+ *                                reason: CI verifies against the compiled-in
+ *                                production anchors, always.
  *
  * The pre-S2 knobs REGISTRY_INDEX_PATH and REGISTRY_MAX_STALENESS_MS are
  * GONE: the build no longer reads a fixture from disk by default, and the

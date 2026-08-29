@@ -143,8 +143,23 @@ jobs:
             if git push origin main; then
               exit 0
             fi
-            echo "push attempt $attempt failed — rebasing and retrying"
-            git pull --rebase origin main
+            echo "push attempt $attempt failed — remote advanced; integrating and recomputing"
+            # A concurrent ratchet run may have committed a DIFFERENT state
+            # floor (the live index moved between our CLI invocation and the
+            # push). A three-way conflict on verify/state.json must never be
+            # resolved by replaying our stale commit on top of theirs: that
+            # would silently REGRESS the floor. Abandon the rebase and
+            # recompute the floor against the live index right now — the
+            # retried commit is always fresh, never stale.
+            if ! git pull --rebase origin main; then
+              git rebase --abort
+            fi
+            ./.generated/registry-verify --require-root \
+              --state verify/state.json --out /tmp/verified-index.json
+            if ! git diff --quiet verify/state.json; then
+              git add verify/state.json
+              git commit --amend --no-edit -q
+            fi
           done
           echo "could not push the ratcheted state after 3 attempts — the rollback floor did not advance" >&2
           exit 1

@@ -115,11 +115,16 @@ site is untouched until a fully successful build's artifact is deployed.
 
 ### Build inputs (environment)
 
-| Variable                       | Meaning                                                                                                                        |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| `REGISTRY_INDEX_URL`           | `--index` to pass the CLI (URL or local path). Unset = the CLI's default, the **live** index.                                  |
-| `REGISTRY_VERIFY_BIN`          | Path to a prebuilt `registry-verify` binary (CI builds one). Unset = `go run ./cmd/registry-verify` (requires Go — local dev). |
-| `REGISTRY_VERIFY_ANCHORS_FILE` | `--anchors-file` to pass the CLI — the test/offline anchors facility. Production CI must never set this.                       |
+| Variable                       | Meaning                                                                                                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REGISTRY_INDEX_URL`           | `--index` to pass the CLI (URL or local path). Unset = the CLI's default, the **live** index. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`). |
+| `REGISTRY_VERIFY_BIN`          | Path to a prebuilt `registry-verify` binary (CI builds one). Unset = `go run ./cmd/registry-verify` (requires Go — local dev).                    |
+| `REGISTRY_VERIFY_ANCHORS_FILE` | `--anchors-file` to pass the CLI — the test/offline anchors facility. **Refused in GitHub Actions** (`ERR_BUILD_CONFIG`).                         |
+
+`REGISTRY_INDEX_URL` and `REGISTRY_VERIFY_ANCHORS_FILE` together are the functional equivalent of
+the deleted staleness override — they bypass the trust chain — so CI hard-fails on either instead
+of trusting a comment: a GitHub Actions build always verifies the **live** index against the
+**compiled-in** production anchors. Both remain fully available for local and offline builds.
 
 The pre-S2 knobs `REGISTRY_INDEX_PATH` and `REGISTRY_MAX_STALENESS_MS` are **gone**: the build
 no longer reads a fixture from disk by default, and the staleness window is the CLI's own 7 days

@@ -89,9 +89,33 @@ export function resolveVerifierCmd(env: NodeJS.ProcessEnv = process.env): {
  * cmd/registry-verify's package doc for the code list) when verification or
  * the pipeline itself fails. A non-zero exit never produces a return value:
  * an unverified index never reaches the build.
+ *
+ * CI hardening: in a GitHub Actions job (GITHUB_ACTIONS=true) the knobs that
+ * point the build at something other than the live index and compiled-in
+ * anchors are refused outright with ERR_BUILD_CONFIG. REGISTRY_INDEX_URL +
+ * REGISTRY_VERIFY_ANCHORS_FILE together are the functional equivalent of the
+ * deleted staleness override — they bypass the entire trust chain — and "CI
+ * never sets them" is a comment, not a constraint. Local and offline builds
+ * (GITHUB_ACTIONS unset) keep both.
  */
 export function verifyIndexViaCli(opts: VerifyCliOptions): Buffer {
-  const { cmd, args: prefixArgs } = resolveVerifierCmd(opts.env ?? process.env);
+  const env = opts.env ?? process.env;
+  if (env['GITHUB_ACTIONS'] === 'true' && (opts.indexURL || opts.anchorsFile)) {
+    const knobs = [
+      opts.indexURL ? 'REGISTRY_INDEX_URL/--index' : null,
+      opts.anchorsFile ? 'REGISTRY_VERIFY_ANCHORS_FILE/--anchors-file' : null,
+    ]
+      .filter(Boolean)
+      .join(' and ');
+    throw new BuildError(
+      'ERR_BUILD_CONFIG',
+      `CI refuses ${knobs}: in a GitHub Actions build the index must be the live index ` +
+        `verified against the compiled-in production anchors. These knobs are the functional ` +
+        `equivalent of the deleted staleness override — they bypass the trust chain — so CI ` +
+        `hard-fails instead of trusting a comment. Set them only for local/offline runs.`
+    );
+  }
+  const { cmd, args: prefixArgs } = resolveVerifierCmd(env);
   const args = [
     ...prefixArgs,
     '--state',
@@ -132,7 +156,18 @@ export function verifyIndexViaCli(opts: VerifyCliOptions): Buffer {
     // The CLI is the authority on its own code surface; the extracted code
     // (or the ERR_VERIFY fallback) may be any of them.
     const code = (stderr.match(/\b(ERR_[A-Z][A-Z_]*)\b/)?.[1] ?? 'ERR_VERIFY') as BuildErrorCode;
-    throw new BuildError(code, stderr || `verifier CLI exited with status ${result.status}`);
+    let message = stderr || `verifier CLI exited with status ${result.status}`;
+    if (code === 'ERR_INDEX_STALE') {
+      // The pinned module's message says WHAT (older than the window), not
+      // WHAT TO DO. The build is fine; the index is not — re-running CI
+      // cannot help and must not be the suggested fix.
+      message +=
+        `\nRecovery: the live index is older than the verifier's 7-day window — this build is ` +
+        `healthy, the index is stale. Re-sign/publish a fresh index (and let the ratchet-state ` +
+        `job advance the floor), then re-dispatch. Do NOT re-run CI on a code change to make ` +
+        `this pass.`;
+    }
+    throw new BuildError(code, message);
   }
 
   try {

@@ -66,6 +66,11 @@ beforeAll(() => {
   }
 }, 600_000);
 
+// This suite's entire purpose is exercising the OFFLINE test facility (local
+// fixture + anchors file) against the real binary — including when CI runs
+// it. The GITHUB_ACTIONS guard in verifyViaCli refuses those knobs on
+// purpose for the BUILD; strip the flag here so the suite can exercise the
+// facility it exists for.
 function runViaCli(statePath: string, outPath: string): () => Buffer {
   return () =>
     verifyIndexViaCli({
@@ -74,7 +79,7 @@ function runViaCli(statePath: string, outPath: string): () => Buffer {
       statePath,
       outPath,
       cwd: root,
-      env: { ...process.env, REGISTRY_VERIFY_BIN: bin! },
+      env: { ...process.env, GITHUB_ACTIONS: undefined, REGISTRY_VERIFY_BIN: bin! },
     });
 }
 
@@ -127,7 +132,7 @@ describe.skipIf(goMissing)('real verifier CLI against a generated signed fixture
           statePath,
           outPath,
           cwd: root,
-          env: { ...process.env, REGISTRY_VERIFY_BIN: bin! },
+          env: { ...process.env, GITHUB_ACTIONS: undefined, REGISTRY_VERIFY_BIN: bin! },
         }),
       'ERR_INDEX_INTEGRITY'
     );
@@ -155,7 +160,7 @@ describe.skipIf(goMissing)('real verifier CLI against a generated signed fixture
           statePath: path.join(tmp, 'state-noanchors.json'),
           outPath: path.join(tmp, 'out-noanchors.json'),
           cwd: root,
-          env: { ...process.env, REGISTRY_VERIFY_BIN: bin! },
+          env: { ...process.env, GITHUB_ACTIONS: undefined, REGISTRY_VERIFY_BIN: bin! },
         }),
       'ERR_TRUST_ANCHORS_UNAVAILABLE'
     );
@@ -170,7 +175,7 @@ describe.skipIf(goMissing)('real verifier CLI against a generated signed fixture
           statePath: path.join(tmp, 'state-missing.json'),
           outPath: path.join(tmp, 'out-missing.json'),
           cwd: root,
-          env: { ...process.env, REGISTRY_VERIFY_BIN: bin! },
+          env: { ...process.env, GITHUB_ACTIONS: undefined, REGISTRY_VERIFY_BIN: bin! },
         }),
       'ERR_INDEX_UNREACHABLE'
     );

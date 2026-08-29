@@ -112,19 +112,24 @@ func TestGenerateSignedFixture(t *testing.T) {
 }
 
 // TestCommittedTemplateIsNotTrusted is the honesty guard for the fixture
-// strategy: the committed template's root signature is synthetic, so the
-// real verifier must REFUSE it even against a key that "matches" nothing —
-// and in particular the template must never verify against a real anchor
-// set. If this test starts passing, someone signed the template with a real
-// key and the "fake signature" premise in this file's doc comment is stale.
+// strategy. The committed template's root signature is synthetic (a made-up
+// keyId and signature bytes), so the real verifier must REFUSE it — anchored
+// against the REAL production anchors (productionAnchors(), the same set the
+// site build verifies with), not a test key: the premise is that the template
+// is trusted by NO key in the production trust core. If this test starts
+// passing, someone signed the template with a production root key and the
+// "fake signature" premise in this file's doc comment is stale.
 func TestCommittedTemplateIsNotTrusted(t *testing.T) {
-	pub, _ := mustGenerateKey(t)
+	anchors, err := productionAnchors()
+	if err != nil {
+		t.Fatalf("production anchors unavailable: %v", err)
+	}
 	_, outPath := tempPaths(t)
-	err := run(context.Background(), options{
+	err = run(context.Background(), options{
 		indexURL:    filepath.Join("..", "..", "test", "fixtures", "sample-index.json"),
 		outPath:     outPath,
 		statePath:   filepath.Join(t.TempDir(), "state.json"),
-		anchors:     testAnchors(pub),
+		anchors:     anchors,
 		requireRoot: true,
 		now:         time.Now,
 	})
