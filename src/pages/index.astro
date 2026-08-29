@@ -12,16 +12,32 @@ const pageConnectors = pages[0] ?? [];
 
 <BaseLayout title="Conduit connector registry">
   <h1>Connectors</h1>
-  <p>
-    {model.connectors.length} connector{model.connectors.length === 1 ? '' : 's'} in the registry. Install
-    any of them with <code>conduit connectors install &lt;name&gt;</code>.
-  </p>
+  {
+    model.connectors.length === 0 ? (
+      // WS4 amended AC 4.6: a legitimately-empty index must read as "nothing
+      // published yet", never as a failed load ("0 connectors in the
+      // registry" is exactly the string an empty-fetch failure would show).
+      <p>No connectors have been published to the registry yet.</p>
+    ) : (
+      <p>
+        {model.connectors.length} connector{model.connectors.length === 1 ? '' : 's'} in the
+        registry. Install any of them with <code>conduit connectors install &lt;name&gt;</code>.
+      </p>
+    )
+  }
   <ConnectorList pageConnectors={pageConnectors} page={1} totalPages={pages.length} />
 
   <h2>Processors</h2>
-  <p>
-    {model.processors.length} processor{model.processors.length === 1 ? '' : 's'} in the registry. Install
-    any of them with <code>conduit processor-plugins install &lt;name&gt;</code>.
-  </p>
+  {
+    model.processors.length === 0 ? (
+      <p>No processors have been published to the registry yet.</p>
+    ) : (
+      <p>
+        {model.processors.length} processor{model.processors.length === 1 ? '' : 's'} in the
+        registry. Install any of them with{' '}
+        <code>conduit processor-plugins install &lt;name&gt;</code>.
+      </p>
+    )
+  }
   <ProcessorList processors={model.processors} />
 </BaseLayout>
