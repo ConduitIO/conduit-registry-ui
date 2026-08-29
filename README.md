@@ -95,6 +95,19 @@ remains the authoritative check of the bytes you actually get.
 - A production deploy of this site, or any DNS/hosting change. `registry.conduitdata.io` stays
   with `conduit-connector-registry` until S6.
 
+## Out of scope for v0.20
+
+- **Config-schema summaries on connector pages** (amended AC 4.3): the frozen index schema
+  carries no config schema, so per-connector pages show versions, install command, and the
+  platform matrix — not a config reference. Connector config docs live with the connectors
+  themselves; wiring index-carried config schemas is a schema change in the registry repo.
+- **`sourceSystem` search** (amended AC 4.2): the field does not exist in the frozen schema.
+  Search covers the fields that do exist — `name`, `displayName`, `description`, `repository`.
+- **Real download stats** (amended AC 4.7): no Scarf token or provisioned endpoint, so the
+  Downloads section is absent from the built site (`grep -c "Downloads" dist/` = 0). The merge
+  plumbing (`src/lib/scarfStats.ts`, `scripts/fetchScarfStats.ts`) stays as the wiring for when
+  a real source exists.
+
 ## Build pipeline (`npm run build`, `scripts/build-site.ts`)
 
 1. **Fetch + verify the live signed index with the Go verifier CLI** (`cmd/registry-verify`,
@@ -175,17 +188,15 @@ self-terminating (the rebuild it triggers finds the state unchanged and pushes n
 
 ## Known, flagged gaps (not silently deferred)
 
-- The site verifies signature and provenance **bundles** at build time, never the artifact
-  **binaries** themselves (S3 fetches bundles only, bounded at 1 MiB). The bytes you actually
-  install are verified at install time, by your CLI — the site's badges vouch for what the
-  index declares, not for the file you download.
+- **Live entries carry no descriptions** (registry content work, deferred to v0.21): search
+  covers `name`/`displayName`/`description`/`repository`, but description search no-ops on live
+  data until the index gains descriptions. The degradation is tested both ways — entries with
+  no description are still findable by name/displayName/repository and are never dropped from
+  results (`test/searchBox.test.tsx`).
 - Processors render on the catalogue page and on `/processors/<name>/` pages but are not yet in
   the search manifest (`search-manifest.json` covers connectors only) — a search for `ai.chunk`
-  finds nothing today. Adding processors to search is a small follow-up (S5 deliberately kept
+  finds nothing today. Adding processors to search is a small follow-up (S4/S5 deliberately kept
   the search surface unchanged).
-- Scarf stats fetch targets a placeholder endpoint shape; no token is provisioned, so the section
-  is removed rather than shown as permanently "unavailable" (an empty shelf would imply a data
-  source exists when none does).
 - No `deprecated` or `all-versions-yanked` connector exists in the current fixture data, so the
   a11y scan's status-variant coverage is active + revoked only for full-page scans; the
   `deprecated`/`yanked` component states are covered at the component level instead

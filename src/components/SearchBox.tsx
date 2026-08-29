@@ -6,10 +6,12 @@ import type { SearchManifestEntry } from '../lib/renderModel';
 /**
  * The one non-trivial island (step6-web-ui.md §5 "Search"). Deliberately the
  * simplest thing that passes the AC, per this repo's YAGNI stance — plain
- * case-insensitive substring matching across name/displayName/description, not
- * a fuzzy-search library. Upgrade only if real usage at real connector-count
- * scale shows it's insufficient (the count is expected to stay in the
- * dozens-to-low-hundreds range, never a fuzzing-scale catalog).
+ * case-insensitive substring matching across name/displayName/description/
+ * repository (WS4 amended AC 4.2: search over the fields that exist in the
+ * frozen schema — `sourceSystem` does not), not a fuzzy-search library.
+ * Upgrade only if real usage at real connector-count scale shows it's
+ * insufficient (the count is expected to stay in the dozens-to-low-hundreds
+ * range, never a fuzzing-scale catalog).
  *
  * Operates over the FULL manifest (fetched from /search-manifest.json, covering
  * every connector across every paginated page), not just the connectors present
@@ -61,11 +63,17 @@ export function SearchBox({ listContainerId }: { listContainerId: string }) {
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q || !manifest) return [];
+    // Four-field OR across name / displayName / description / repository —
+    // the fields that exist in the frozen schema (amended AC 4.2). The
+    // missing-description degradation is structural: `description` defaults
+    // to '' in the manifest, so a bare-name entry still matches here on the
+    // other three fields and is never silently dropped from results.
     return manifest.filter(
       (c) =>
         c.name.toLowerCase().includes(q) ||
         c.displayName.toLowerCase().includes(q) ||
-        c.description.toLowerCase().includes(q)
+        c.description.toLowerCase().includes(q) ||
+        (c.repository ?? '').toLowerCase().includes(q)
     );
   }, [query, manifest]);
 

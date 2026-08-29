@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { SignedIndex } from '../../src/lib/schema';
+import type { IndexPayload, SignedIndex } from '../../src/lib/schema';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,6 +18,20 @@ export function loadSampleIndex(): SignedIndex {
 
 export function loadSampleIndexRaw(): string {
   return readFileSync(path.join(here, 'sample-index.json'), 'utf-8');
+}
+
+/** The amended-4.6 empty-catalogue fixtures (WS4 S4): one with zero
+ * connectors (processors present) and one with zero processors (connectors
+ * present), so a page test can prove the empty copy is scoped to the right
+ * section — the non-empty side renders its normal count line. Payload-shaped
+ * (buildRenderModel input), not full signed envelopes: the fixtures exist to
+ * exercise the render + page, not the verifier. */
+export function loadEmptyConnectorsPayload(): IndexPayload {
+  return JSON.parse(readFileSync(path.join(here, 'empty-connectors.json'), 'utf-8'));
+}
+
+export function loadEmptyProcessorsPayload(): IndexPayload {
+  return JSON.parse(readFileSync(path.join(here, 'empty-processors.json'), 'utf-8'));
 }
 
 /** The sample index's own frozen timestamp. Since S2 PR-2 the build never

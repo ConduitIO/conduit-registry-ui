@@ -226,17 +226,13 @@ const installCommand = `conduit connectors install ${connector.name}`;
     )
   }
 
-  <section aria-labelledby="stats-heading">
-    <h2 id="stats-heading">Downloads</h2>
-    {
-      connector.stats && !connector.stats.unavailable ? (
-        <p>
-          {connector.stats.totalDownloads?.toLocaleString()} total downloads, as of{' '}
-          {new Date(connector.stats.asOf).toISOString().slice(0, 10)}.
-        </p>
-      ) : (
-        <p>Download stats unavailable.</p>
-      )
-    }
-  </section>
+  {
+    // WS4 amended AC 4.7: NO Downloads section — there is no real download-
+    // stats source provisioned (no Scarf token), so the section is absent
+    // rather than rendered as permanently "unavailable" (an empty shelf would
+    // imply a data source exists when none does). The merge plumbing
+    // (src/lib/scarfStats.ts + scripts/fetchScarfStats.ts) stays as the
+    // wiring for when a real source exists; the AC's dist-level check is
+    // `grep -c "Downloads" dist/` = 0, enforced by the integration test.
+  }
 </BaseLayout>
