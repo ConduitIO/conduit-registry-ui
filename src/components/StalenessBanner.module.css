@@ -1,0 +1,8 @@
+.banner {
+  margin: 0 0 var(--conduit-space-3);
+  padding: var(--conduit-space-2) var(--conduit-space-3);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--conduit-color-status-recovering) 14%, transparent);
+  color: var(--conduit-color-text);
+  font-weight: 600;
+}

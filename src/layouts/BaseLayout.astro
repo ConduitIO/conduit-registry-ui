@@ -1,6 +1,8 @@
 ---
 import '../styles/tokens.css';
 import '../styles/global.css';
+import { StalenessBanner } from '../components/StalenessBanner';
+import { loadRenderModel } from '../lib/loadRenderModel';
 
 export interface Props {
   title: string;
@@ -11,6 +13,27 @@ const {
   title,
   description = 'The Conduit connector registry — signed, verifiable connector distribution.',
 } = Astro.props;
+
+// The footer renders the build's verification record (WS4 4.14) — index
+// version, signing timestamp, build timestamp, verifier version — real
+// values from the render model. A page rendered outside a full build (e.g.
+// dev mode without .generated/render-model.json) degrades to '—' rather than
+// inventing values.
+let model:
+  | {
+      indexVersion?: number;
+      indexTimestamp?: string;
+      generatedAt?: string;
+      verifierVersion?: string;
+      indexAgeMs?: number;
+    }
+  | undefined;
+try {
+  model = loadRenderModel();
+} catch {
+  model = undefined;
+}
+const fmtDate = (iso?: string) => (iso ? new Date(iso).toISOString().slice(0, 10) : undefined);
 ---
 
 <!doctype html>
@@ -26,9 +49,11 @@ const {
     <header class="site-header">
       <nav aria-label="Primary">
         <a href="/">Conduit connector registry</a>
+        <a href="/verify/">Verification report</a>
       </nav>
     </header>
     <main id="main-content">
+      {model?.indexAgeMs !== undefined && <StalenessBanner indexAgeMs={model.indexAgeMs} />}
       <slot />
     </main>
     <footer class="site-footer">
@@ -38,6 +63,12 @@ const {
           <a href="https://github.com/ConduitIO/conduit-connector-registry"
             >ConduitIO/conduit-connector-registry</a
           >.
+        </p>
+        <p>
+          Index version <code>{model?.indexVersion ?? '—'}</code> · signed{' '}
+          {fmtDate(model?.indexTimestamp) ?? '—'} · site built {fmtDate(model?.generatedAt) ?? '—'}
+          {' '}· verifier <code>{model?.verifierVersion ?? '—'}</code>. See the{' '}
+          <a href="/verify/">verification report</a> for what these verdicts mean.
         </p>
       </div>
     </footer>

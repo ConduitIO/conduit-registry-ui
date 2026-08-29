@@ -27,10 +27,17 @@ const listId = 'processor-list';
         <a href={`/processors/${p.name}/`}>
           <strong>{p.displayName}</strong> <code>{p.name}</code>
         </a>{' '}
-        <VerifiedBadge
-          verified={p.versions.some((v) => v.isDefault && v.verified)}
-          descriptionId={SIGNATURE_NOTE_ID}
-        />
+        {(() => {
+          const dv = p.versions.find((v) => v.isDefault);
+          return dv ? (
+            <VerifiedBadge
+              verdict={dv.verdict}
+              {...(dv.verdictReason !== undefined ? { reason: dv.verdictReason } : {})}
+              {...(dv.verdictCheckedAt !== undefined ? { checkedAt: dv.verdictCheckedAt } : {})}
+              descriptionId={SIGNATURE_NOTE_ID}
+            />
+          ) : null;
+        })()}
         <EffectiveStatusTag status={p.effectiveStatus} />
         <p title={p.description}>{p.description}</p>
       </li>

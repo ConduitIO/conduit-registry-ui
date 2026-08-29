@@ -8,6 +8,7 @@ import { CopyInstallButton } from '../../components/CopyInstallButton';
 import DeclaredMinimaNote from '../../components/DeclaredMinimaNote.astro';
 import { loadRenderModel } from '../../lib/loadRenderModel';
 import { sortVersionsDescending } from '../../lib/semver';
+import { installGateFor, type InstallGate } from '../../lib/verdicts';
 
 export function getStaticPaths() {
   const model = loadRenderModel();
@@ -32,10 +33,20 @@ const installCommand = `conduit processor-plugins install ${processor.name}`;
       <code>{processor.name}</code>
     </h1>
     <p>
-      <VerifiedBadge
-        verified={defaultVersion ? defaultVersion.verified : false}
-        descriptionId={SIGNATURE_NOTE_ID}
-      />
+      {
+        defaultVersion && (
+          <VerifiedBadge
+            verdict={defaultVersion.verdict}
+            {...(defaultVersion.verdictReason !== undefined
+              ? { reason: defaultVersion.verdictReason }
+              : {})}
+            {...(defaultVersion.verdictCheckedAt !== undefined
+              ? { checkedAt: defaultVersion.verdictCheckedAt }
+              : {})}
+            descriptionId={SIGNATURE_NOTE_ID}
+          />
+        )
+      }
       <EffectiveStatusTag status={processor.effectiveStatus} />
     </p>
     <SignatureNote />
@@ -73,14 +84,45 @@ const installCommand = `conduit processor-plugins install ${processor.name}`;
   <section aria-labelledby="install-heading">
     <h2 id="install-heading">Install</h2>
     {
-      processor.suppressInstallCommand ? (
-        <p>
-          Install is disabled for this processor — see the notice above. Do not attempt to install
-          it manually until the status changes.
-        </p>
-      ) : (
-        <CopyInstallButton command={installCommand} client:load />
-      )
+      (() => {
+        // WS4 4.13: a version the CLI would refuse to install never gets an
+        // active install command (failed verification, or no provenance — the
+        // CLI hard-refuses no-provenance versions).
+        const gate: InstallGate = installGateFor({
+          suppressInstallCommand: processor.suppressInstallCommand,
+          verdict: defaultVersion?.verdict,
+          verdictReason: defaultVersion?.verdictReason,
+          version: defaultVersion?.version,
+        });
+        switch (gate.gate) {
+          case 'suppress':
+            return (
+              <p>
+                Install is disabled for this processor — see the notice above. Do not attempt to
+                install it manually until the status changes.
+              </p>
+            );
+          case 'fail':
+            return (
+              <p data-install-gated="fail">
+                Install is disabled for version <code>{gate.version}</code>: its signature
+                verification failed at build time ({gate.reason ?? 'unknown reason'}). Do not
+                install this version.
+              </p>
+            );
+          case 'no-provenance':
+            return (
+              <p data-install-gated="no-provenance">
+                Install is disabled for version <code>{gate.version}</code>: the index declares no
+                SLSA provenance for it, and the conduit CLI refuses to install versions without
+                provenance. Publish a provenance bundle for this version (or fix the index) before
+                installing.
+              </p>
+            );
+          case 'none':
+            return <CopyInstallButton command={installCommand} client:load />;
+        }
+      })()
     }
   </section>
 
@@ -128,7 +170,12 @@ const installCommand = `conduit processor-plugins install ${processor.name}`;
                 )}
               </td>
               <td>
-                <VerifiedBadge verified={v.verified} descriptionId={SIGNATURE_NOTE_ID} />
+                <VerifiedBadge
+                  verdict={v.verdict}
+                  {...(v.verdictReason !== undefined ? { reason: v.verdictReason } : {})}
+                  {...(v.verdictCheckedAt !== undefined ? { checkedAt: v.verdictCheckedAt } : {})}
+                  descriptionId={SIGNATURE_NOTE_ID}
+                />
               </td>
             </tr>
           ))

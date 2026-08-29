@@ -111,7 +111,152 @@ describe('buildRenderModel — search manifest carries only presentation fields'
   });
 });
 
-describe('buildRenderModel — processors (WS4 amended AC 4.9: rendered with the same honesty properties as connectors)', () => {
+describe('buildRenderModel — per-version verdicts (WS4 S3)', () => {
+  it('merges the artifacts report verdicts onto every version, with reason + checkedAt', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload, {
+      verified: true,
+      generatedAt: '2026-08-29T12:00:00Z',
+      artifacts: {
+        schemaVersion: 1,
+        generatedAt: '2026-08-29T12:00:00Z',
+        indexVersion: 42,
+        indexTimestamp: '2026-07-14T09:00:00Z',
+        verifierVersion: 'v0.20.0-nightly',
+        connectors: [
+          {
+            name: 'postgres',
+            versions: [
+              {
+                version: '0.14.0',
+                verdict: 'pass',
+                checkedAt: '2026-08-29T12:00:00Z',
+                artifacts: [],
+              },
+              {
+                version: '0.14.1',
+                verdict: 'fail',
+                reason: 'signature bundle does not verify against the trust anchors',
+                checkedAt: '2026-08-29T12:00:00Z',
+                artifacts: [],
+              },
+              {
+                version: '0.14.2',
+                verdict: 'not_attempted',
+                reason: 'no provenance in index',
+                checkedAt: '2026-08-29T12:00:00Z',
+                artifacts: [],
+              },
+            ],
+          },
+          { name: 'example-vector-sink', versions: [] },
+        ],
+      },
+    });
+    const postgres = model.connectors.find((c) => c.name === 'postgres')!;
+    expect(postgres.versions.find((v) => v.version === '0.14.0')!.verdict).toBe('pass');
+    const failV = postgres.versions.find((v) => v.version === '0.14.1')!;
+    expect(failV.verdict).toBe('fail');
+    expect(failV.verdictReason).toContain('does not verify');
+    expect(failV.verdictCheckedAt).toBe('2026-08-29T12:00:00Z');
+    const naV = postgres.versions.find((v) => v.version === '0.14.2')!;
+    expect(naV.verdict).toBe('not_attempted');
+    expect(naV.verdictReason).toBe('no provenance in index');
+  });
+
+  it('without a report, every version is not_attempted with the explicit reason — never pass', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload, { verified: true });
+    for (const c of model.connectors) {
+      for (const v of c.versions) {
+        // The revoked publisher's versions are NOT part of this rule: the
+        // revocation overlay turns them into a fail with the revocation
+        // reason (a verified signature under a revoked identity is a trust
+        // failure, not an abstention — covered by the dedicated tests
+        // below).
+        if (c.name === 'example-vector-sink') continue;
+        expect(v.verdict).toBe('not_attempted');
+        expect(v.verdictReason).toMatch(/no verdict/);
+      }
+    }
+  });
+
+  it('a revoked publisher renders every version fail with the revocation reason, keeping the crypto row’s checkedAt', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload, {
+      verified: true,
+      artifacts: {
+        schemaVersion: 1,
+        generatedAt: '2026-08-29T12:00:00Z',
+        indexVersion: 42,
+        indexTimestamp: '2026-07-14T09:00:00Z',
+        verifierVersion: 'v0.20.0-nightly',
+        connectors: [
+          {
+            name: 'example-vector-sink',
+            versions: [
+              {
+                version: '0.3.0',
+                verdict: 'pass',
+                checkedAt: '2026-08-29T12:00:00Z',
+                artifacts: [],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const revoked = model.connectors.find((c) => c.name === 'example-vector-sink')!;
+    const v = revoked.versions.find((x) => x.version === '0.3.0')!;
+    // A crypto-VERIFIED signature under a revoked identity is a trust failure
+    // (the reason says so) — the badge is fail, not an abstention, and stays
+    // dated with the crypto row's checkedAt.
+    expect(v.verdict).toBe('fail');
+    expect(v.verdictReason).toMatch(/revoked/);
+    expect(v.verdictCheckedAt).toBe('2026-08-29T12:00:00Z');
+  });
+
+  it('a revoked publisher without a crypto row still renders fail, undated', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload, { verified: true });
+    const revoked = model.connectors.find((c) => c.name === 'example-vector-sink')!;
+    for (const v of revoked.versions) {
+      expect(v.verdict).toBe('fail');
+      expect(v.verdictReason).toMatch(/revoked/);
+      expect(v.verdictCheckedAt).toBeUndefined();
+    }
+  });
+});
+
+describe('buildRenderModel — index staleness data + verifier version', () => {
+  it('computes indexAgeMs from the build clock, and carries the verifier version', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload, {
+      verified: true,
+      generatedAt: '2026-07-21T09:00:00Z',
+      artifacts: {
+        schemaVersion: 1,
+        generatedAt: '2026-07-21T09:00:00Z',
+        indexVersion: 42,
+        indexTimestamp: '2026-07-14T09:00:00Z',
+        verifierVersion: 'v0.20.0-nightly',
+        connectors: [],
+      },
+    });
+    expect(model.indexAgeMs).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(model.verifierVersion).toBe('v0.20.0-nightly');
+    expect(model.verified).toBe(true);
+  });
+
+  it('never reports a negative index age (clock skew), and omits verifierVersion without a report', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload, { generatedAt: '2026-07-01T09:00:00Z' });
+    expect(model.indexAgeMs).toBe(0);
+    expect(model.verifierVersion).toBeUndefined();
+  });
+});
+
+describe('buildRenderModel — processors (WS4 S5: rendered with the same verdict honesty as connectors)', () => {
   it('derives every processor with the same fields connectors get (badge, status, install suppression, default version)', () => {
     const { payload } = loadSampleIndex();
     const model = buildRenderModel(payload);
@@ -134,20 +279,47 @@ describe('buildRenderModel — processors (WS4 amended AC 4.9: rendered with the
     expect(v.isDefault).toBe(true);
   });
 
-  it('marks the default version verified only when signature AND provenance references are present (same two-layer rule as connectors)', () => {
+  it('processor versions are not_attempted without a verdict row — presence earns no pass', () => {
     const { payload } = loadSampleIndex();
     const model = buildRenderModel(payload);
     const chunk = model.processors.find((p) => p.name === 'ai.chunk')!;
     // The sample fixture's ai.chunk carries artifact.signature + version-level
-    // slsaProvenance, mirroring the live index — so it is verified.
-    expect(chunk.versions[0]!.verified).toBe(true);
+    // slsaProvenance — exactly the shape S3's honesty floor refuses to
+    // presence-pass: no crypto row, no green.
+    expect(payload.processors![0]!.versions[0]!.artifact.signature).toBeDefined();
+    expect(chunk.versions[0]!.verdict).toBe('not_attempted');
+    expect(chunk.versions[0]!.verdictReason).toMatch(/no verdict/);
+  });
 
-    // Strip the signature reference: the badge must flip, never be derived
-    // from presence-by-omission.
-    const stripped = payload.processors![0]!.versions[0]!.artifact as { signature?: unknown };
-    stripped.signature = undefined;
-    const degraded = buildRenderModel(payload);
-    expect(degraded.processors[0]!.versions[0]!.verified).toBe(false);
+  it('renders a pass verdict for a processor version with a verified crypto row', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload, {
+      verified: true,
+      artifacts: {
+        schemaVersion: 1,
+        generatedAt: '2026-08-29T12:00:00Z',
+        indexVersion: 42,
+        indexTimestamp: '2026-07-14T09:00:00Z',
+        verifierVersion: 'v0.20.0-nightly',
+        connectors: [],
+        processors: [
+          {
+            name: 'ai.chunk',
+            versions: [
+              {
+                version: '0.1.0',
+                verdict: 'pass',
+                checkedAt: '2026-08-29T12:00:00Z',
+                artifacts: [],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const chunk = model.processors.find((p) => p.name === 'ai.chunk')!;
+    expect(chunk.versions[0]!.verdict).toBe('pass');
+    expect(chunk.versions[0]!.verdictCheckedAt).toBe('2026-08-29T12:00:00Z');
   });
 
   it('suppresses install and flags the status when every processor version is yanked', () => {

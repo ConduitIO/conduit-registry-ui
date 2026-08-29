@@ -52,9 +52,12 @@ describe('pickDefaultVersion', () => {
     expect(pickDefaultVersion(c)).toBeUndefined();
   });
 
-  it('matches expectations against the real sample index (postgres: 0.14.0 yanked, 0.14.1 not)', () => {
+  it('matches expectations against the real sample index (postgres: 0.14.0 yanked, 0.14.2 newest non-yanked)', () => {
     const { payload } = loadSampleIndex();
     const postgres = payload.connectors.find((c) => c.name === 'postgres')!;
-    expect(pickDefaultVersion(postgres)?.version).toBe('0.14.1');
+    // 0.14.2 (the WS4 S3 no-provenance honesty case) is the newest non-yanked
+    // version, so it is the default — default selection is a lifecycle pick,
+    // orthogonal to the signature verdict.
+    expect(pickDefaultVersion(postgres)?.version).toBe('0.14.2');
   });
 });

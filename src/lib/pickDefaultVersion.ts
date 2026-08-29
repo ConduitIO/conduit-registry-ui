@@ -1,5 +1,5 @@
 import type { YankReason } from './schema';
-import { isYanked } from './deriveVerified';
+import { isYanked } from './verdicts';
 import { sortVersionsDescending } from './semver';
 
 /**

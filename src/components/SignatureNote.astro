@@ -8,10 +8,8 @@
  * its `descriptionId` prop, wiring `aria-describedby` to this paragraph).
  *
  * Every page that renders a `VerifiedBadge` MUST also render exactly one
- * `SignatureNote` (fix/verified-badge-honesty — closes the false "Verified"
- * claim called out against registry.conduitdata.io; see the PR description for
- * the before/after wording). It states plainly what the badge does and does
- * NOT mean:
+ * `SignatureNote`. It states plainly what the badge does and does NOT mean:
+ *
  *   - what ran, at the INDEX level (S2 PR-2, real): the build runs the
  *     conduit CLI's own verifier (cmd/registry-verify, --require-root, same
  *     compiled-in trust anchors) against the index's ROOT signature, rollback
@@ -19,27 +17,37 @@
  *     that fails. The index every page here renders is therefore
  *     cryptographically authenticated — an index the conduit CLI would refuse
  *     cannot reach this site.
- *   - what ran, at the VERSION level: this version's entry in that verified
- *     index references a signature bundle and an SLSA provenance bundle
- *     (deriveVerified.ts).
- *   - what did NOT run: this site never downloads the connector binary and
- *     performs no cryptographic check of the artifact bytes — real
- *     verification of the actual file you install (identity-pinned Sigstore
- *     + SLSA provenance) happens at install time, in the CLI, not here.
- * Per-artifact verification at build time is planned separately (WS4 S3) —
- * this component does not claim that work is done.
+ *   - what ran, at the VERSION level (WS4 S3, real): the same build also ran
+ *     the verifier's --artifacts pass — it fetched every referenced signature
+ *     and SLSA provenance BUNDLE (never the binaries; bounded at the CLI's
+ *     1 MiB cap), verified them against the trust anchors and the connector's
+ *     pinned identity, and checked that the provenance subject digest binds
+ *     to the sha256 the index declares. The badge renders that verdict:
+ *     pass / fail(reason) / not_attempted(reason).
+ *   - what did NOT run: the site never downloads the artifact binaries
+ *     (connector or processor — WS4 S5 covers processors with the same
+ *     verdicts), so the badges vouch for the bytes the INDEX declares, not
+ *     the bytes a download serves you today. Real verification of the actual
+ *     file you install happens at install time, in the CLI, against the same
+ *     anchors.
+ *
+ * The /verify page (src/pages/verify.astro) is the full, human-readable
+ * record: what was verified, how, when (as-of dates), and what the verdicts
+ * do not mean.
  */
 export const SIGNATURE_NOTE_ID = 'signature-note';
 ---
 
 <p id={SIGNATURE_NOTE_ID}>
-  &ldquo;Signature on file&rdquo; means this version&rsquo;s entry in the registry&rsquo;s signed
-  index references a signature bundle and an SLSA provenance bundle. The index itself was
-  cryptographically verified at build time: this site&rsquo;s build runs the conduit CLI&rsquo;s own
-  verifier against the index&rsquo;s root signature, rollback floor, and 7-day staleness window, and
-  refuses to build from anything that fails. What this site still does not do: it never downloads
-  the connector binary, so it cannot confirm that the file you install today matches what was
-  signed. That check happens when you run <code>conduit connectors install &lt;name&gt;</code>,
-  which verifies the actual bytes against a pinned publisher identity via Sigstore and checks SLSA
-  provenance before installing anything.
+  Badges on this page are build-time verification verdicts: the site&rsquo;s build cryptographically
+  verifies the signed index itself (root signature, rollback floor, 7-day staleness window) and then
+  verifies every version&rsquo;s signature and SLSA provenance bundles against the trust anchors,
+  the publisher&rsquo;s pinned identity, and the index-declared sha256 &mdash; pass, fail, or not
+  attempted, each with a reason. What this site still does not do: it never downloads the artifact
+  binaries (connector or processor), so the badges vouch for the bytes the index declares, not the
+  bytes a download serves you today. That check happens when you run
+  <code>conduit connectors install &lt;name&gt;</code> (or <code>conduit processors install</code>),
+  which verifies the actual bytes against the same anchors before installing anything. Full details:
+  the
+  <a href="/verify/">verification report</a>.
 </p>

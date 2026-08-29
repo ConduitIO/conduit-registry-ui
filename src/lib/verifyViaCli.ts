@@ -52,6 +52,14 @@ export interface VerifyCliOptions {
    * base64 ed25519 public-key bytes). Test/offline runs only; see the
    * module doc. */
   anchorsFile?: string;
+  /** --artifacts: where the CLI writes the per-version artifact verdict
+   * report JSON (WS4 S3). The site build always sets it; the report flows
+   * into the render model (src/lib/verdicts.ts). */
+  artifactsOut?: string;
+  /** --trust-root-file: a Sigstore TrustedRoot JSON replacing the embedded
+   * production Sigstore root for the artifacts pass — test/offline runs
+   * only, exactly like --anchors-file (the build's CI guard refuses both). */
+  trustRootFile?: string;
   /** --state: committed high-water state file the CLI loads, checks rollback
    * against, and ratchets after a successful verify. */
   statePath: string;
@@ -91,19 +99,25 @@ export function resolveVerifierCmd(env: NodeJS.ProcessEnv = process.env): {
  * an unverified index never reaches the build.
  *
  * CI hardening: in a GitHub Actions job (GITHUB_ACTIONS=true) the knobs that
- * point the build at something other than the live index and compiled-in
- * anchors are refused outright with ERR_BUILD_CONFIG. REGISTRY_INDEX_URL +
- * REGISTRY_VERIFY_ANCHORS_FILE together are the functional equivalent of the
- * deleted staleness override — they bypass the entire trust chain — and "CI
- * never sets them" is a comment, not a constraint. Local and offline builds
- * (GITHUB_ACTIONS unset) keep both.
+ * point the build at something other than the live index, the compiled-in
+ * anchors, or the embedded production Sigstore root are refused outright with
+ * ERR_BUILD_CONFIG. REGISTRY_INDEX_URL + REGISTRY_VERIFY_ANCHORS_FILE
+ * together are the functional equivalent of the deleted staleness override —
+ * they bypass the entire trust chain — and REGISTRY_VERIFY_TRUST_ROOT_FILE
+ * replaces the production Sigstore root the artifacts verdicts verify
+ * against; "CI never sets them" is a comment, not a constraint. Local and
+ * offline builds (GITHUB_ACTIONS unset) keep all three.
  */
 export function verifyIndexViaCli(opts: VerifyCliOptions): Buffer {
   const env = opts.env ?? process.env;
-  if (env['GITHUB_ACTIONS'] === 'true' && (opts.indexURL || opts.anchorsFile)) {
+  if (
+    env['GITHUB_ACTIONS'] === 'true' &&
+    (opts.indexURL || opts.anchorsFile || opts.trustRootFile)
+  ) {
     const knobs = [
       opts.indexURL ? 'REGISTRY_INDEX_URL/--index' : null,
       opts.anchorsFile ? 'REGISTRY_VERIFY_ANCHORS_FILE/--anchors-file' : null,
+      opts.trustRootFile ? 'REGISTRY_VERIFY_TRUST_ROOT_FILE/--trust-root-file' : null,
     ]
       .filter(Boolean)
       .join(' and ');
@@ -131,6 +145,8 @@ export function verifyIndexViaCli(opts: VerifyCliOptions): Buffer {
   ];
   if (opts.indexURL) args.push('--index', opts.indexURL);
   if (opts.anchorsFile) args.push('--anchors-file', opts.anchorsFile);
+  if (opts.artifactsOut) args.push('--artifacts', opts.artifactsOut);
+  if (opts.trustRootFile) args.push('--trust-root-file', opts.trustRootFile);
 
   const spawn = opts.spawn ?? ((cmd, args, opts) => spawnSync(cmd, args, opts));
   const result = spawn(cmd, args, {

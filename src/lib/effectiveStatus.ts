@@ -1,5 +1,5 @@
 import type { Connector, Processor, Revocation, YankReason } from './schema';
-import { isPublisherRevoked } from './deriveVerified';
+import { isPublisherRevoked } from './verdicts';
 import { pickDefaultVersion } from './pickDefaultVersion';
 
 export type EffectiveStatus = 'active' | 'deprecated' | 'yanked' | 'revoked';

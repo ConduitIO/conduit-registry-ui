@@ -111,7 +111,14 @@ async function main(): Promise<void> {
     throw new Error(`axe-core browser bundle not found at ${AXE_CORE_PATH}`);
   }
 
-  const routes = ['/', ...representativeConnectorRoutes(), ...representativeProcessorRoutes()];
+  // /verify/ carries the three-state verdicts + the verifier report; it is
+  // scanned with the connector + processor pages, not just the known routes.
+  const routes = [
+    '/',
+    '/verify/',
+    ...representativeConnectorRoutes(),
+    ...representativeProcessorRoutes(),
+  ];
   const server = await startStaticServer(distDir);
   const browser = await chromium.launch();
 

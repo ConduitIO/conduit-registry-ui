@@ -29,10 +29,17 @@ const listId = 'connector-list';
         <a href={`/connectors/${c.name}/`}>
           <strong>{c.displayName}</strong> <code>{c.name}</code>
         </a>{' '}
-        <VerifiedBadge
-          verified={c.versions.some((v) => v.isDefault && v.verified)}
-          descriptionId={SIGNATURE_NOTE_ID}
-        />
+        {(() => {
+          const dv = c.versions.find((v) => v.isDefault);
+          return dv ? (
+            <VerifiedBadge
+              verdict={dv.verdict}
+              {...(dv.verdictReason !== undefined ? { reason: dv.verdictReason } : {})}
+              {...(dv.verdictCheckedAt !== undefined ? { checkedAt: dv.verdictCheckedAt } : {})}
+              descriptionId={SIGNATURE_NOTE_ID}
+            />
+          ) : null;
+        })()}
         <EffectiveStatusTag status={c.effectiveStatus} />
         <p title={c.description}>{c.description}</p>
       </li>
