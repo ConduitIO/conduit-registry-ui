@@ -194,11 +194,16 @@ describe('catalogue pages — real astro build from fixture render models (WS4 S
 });
 
 afterAll(() => {
-  // Leave no trace: the test's fixture-based dist/, .generated/, and
+  // Leave no trace: the test's fixture-based dist/, render-model.json, and
   // search-manifest.json are build outputs (gitignored) — the real build
   // regenerates all three. Cleaning up keeps a post-test `npm run dev` from
   // serving fixture data.
+  //
+  // Only the render-model FILE is removed, never the whole .generated/ dir:
+  // CI's workflow pre-builds the registry-verify binary to
+  // .generated/registry-verify before `npm test` and the build step needs it
+  // afterwards — deleting the dir there breaks the build with ENOENT.
   rmSync(DIST_DIR, { recursive: true, force: true });
-  rmSync(GENERATED_DIR, { recursive: true, force: true });
+  rmSync(RENDER_MODEL_PATH, { force: true });
   rmSync(SEARCH_MANIFEST_PATH, { force: true });
 });
