@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { buildRenderModel } from '../src/lib/renderModel';
 import { BuildError } from '../src/lib/errors';
-import { loadSampleIndex } from './fixtures/loadFixture';
+import {
+  loadEmptyConnectorsPayload,
+  loadEmptyProcessorsPayload,
+  loadSampleIndex,
+} from './fixtures/loadFixture';
 import type { IndexPayload } from '../src/lib/schema';
 
 describe('buildRenderModel — reserved-route-segment collision (§9 edge case)', () => {
@@ -108,6 +112,55 @@ describe('buildRenderModel — search manifest carries only presentation fields'
         expect(allowedKeys.has(key)).toBe(true);
       }
     }
+  });
+});
+
+describe('buildRenderModel — search manifest fields (WS4 S4, amended AC 4.2)', () => {
+  it('carries the repository for entries that declare one — search covers it alongside name/displayName/description', () => {
+    const { payload } = loadSampleIndex();
+    const model = buildRenderModel(payload);
+    const postgres = model.searchManifest.find((e) => e.name === 'postgres')!;
+    expect(postgres.repository).toBe('https://github.com/ConduitIO/conduit-connector-postgres');
+  });
+
+  it('omits the repository key for entries that do not declare one — the SearchBox matcher defaults it to "" (test/searchBox.test.tsx)', () => {
+    const { payload } = loadSampleIndex();
+    delete payload.connectors[0]!.repository;
+    const model = buildRenderModel(payload);
+    const entry = model.searchManifest.find((e) => e.name === 'postgres')!;
+    expect(entry.repository).toBeUndefined();
+  });
+
+  it('defaults a missing description to "" in the manifest — an entry without a description is never dropped (the live-data shape)', () => {
+    const { payload } = loadSampleIndex();
+    const postgres = payload.connectors.find((c) => c.name === 'postgres')!;
+    delete postgres.description;
+    const model = buildRenderModel(payload);
+    const entry = model.searchManifest.find((e) => e.name === 'postgres')!;
+    expect(entry.description).toBe('');
+    // Still fully findable by its other fields: name, displayName, repository.
+    expect(entry.name).toBe('postgres');
+    expect(entry.displayName).toBe('PostgreSQL');
+    expect(entry.repository).toBe('https://github.com/ConduitIO/conduit-connector-postgres');
+    // And the rendered connector model keeps the same '' default.
+    const rendered = model.connectors.find((c) => c.name === 'postgres')!;
+    expect(rendered.description).toBe('');
+  });
+
+  it('is empty for an empty connectors catalogue — and the model builds without error (amended AC 4.6: never a crash)', () => {
+    const payload = loadEmptyConnectorsPayload();
+    const model = buildRenderModel(payload);
+    expect(model.connectors).toEqual([]);
+    expect(model.searchManifest).toEqual([]);
+    // The processors side is untouched by an empty connectors collection.
+    expect(model.processors).toHaveLength(2);
+  });
+
+  it('builds a zero-processor model from the empty-processors fixture — connectors untouched', () => {
+    const payload = loadEmptyProcessorsPayload();
+    const model = buildRenderModel(payload);
+    expect(model.processors).toEqual([]);
+    expect(model.connectors).toHaveLength(2);
   });
 });
 
