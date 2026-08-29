@@ -5,3 +5,7 @@ dist/
 public/search-manifest.json
 *.log
 .DS_Store
+# Raw index bytes written by cmd/registry-verify after a successful verify;
+# the build copies them into dist/. Regenerated every run — never committed.
+# The high-water mark (verify/state.json) IS committed: that is the memory.
+verify/index.json

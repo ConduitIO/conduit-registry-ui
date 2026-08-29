@@ -1,0 +1,46 @@
+name: go-ci
+
+# Builds + tests the Go trust-core tooling in this repo (cmd/registry-verify),
+# whose round-trip tests prove the CLI verifies the index with conduit's
+# shipped index.Verify + compiled-in DefaultTrustAnchors — the site's trust
+# core must never drift from the CLI's. Distinct from ci.yml (the Astro site),
+# mirroring conduit-connector-registry's go-ci.yml / ci.yml split.
+#
+# The verify/ state file is included so a PR that ratchets the high-water
+# mark (the build commits it after a successful verify) always gets tested.
+on:
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'verify/**'
+      - '.github/workflows/go-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'verify/**'
+      - '.github/workflows/go-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l cmd/)"
